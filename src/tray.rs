@@ -88,7 +88,10 @@ impl Tray {
         .ok()?;
         let builder = TrayIconBuilder::new().with_id("shard").with_menu(Box::new(menu)).with_menu_on_left_click(false);
         // A template on macOS: only alpha counts, and the system colours it for the menu bar.
-        let builder = if cfg!(target_os = "macos") { builder.with_icon_templated(icon(None)) } else { builder.with_icon(icon(None)) };
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_templated(icon(None));
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(icon(None));
         let icon = builder
             .with_tooltip("Shard")
             .build()
@@ -102,7 +105,10 @@ impl Tray {
         let step = status.progress.map(|p| (p.clamp(0., 1.) * 100.) as u8);
         if self.drawn != Some(step) {
             let drawn = Some(icon(status.progress));
-            let _ = if cfg!(target_os = "macos") { self.icon.set_icon_templated(drawn) } else { self.icon.set_icon(drawn) };
+            #[cfg(target_os = "macos")]
+            let _ = self.icon.set_icon_templated(drawn);
+            #[cfg(not(target_os = "macos"))]
+            let _ = self.icon.set_icon(drawn);
             self.drawn = Some(step);
         }
         if self.shown.as_ref() == Some(status) {
