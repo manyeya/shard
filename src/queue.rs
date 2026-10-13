@@ -655,6 +655,7 @@ pub(crate) mod tests {
         let m = Manager::open(&dir.join("shard.db"), PathBuf::new(), Handle::current()).unwrap();
         let rows = m.rows();
         assert_eq!((rows.len(), rows[0].status, m.settings().max_active), (1, Status::Done, 1));
-        std::fs::remove_dir_all(dir).unwrap();
+        // Best effort: Windows won't delete the database while the manager still has it open.
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

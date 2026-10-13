@@ -165,6 +165,7 @@ mod tests {
         m.pause_all(); // its URL is a closed port; no need to watch it retry
         let saved = crate::db::Db::open(&dir.join("shard.db")).unwrap().all().unwrap();
         assert!(saved[0].headers.contains("cookie: sid=42") && saved[0].headers.contains("referer: http://example.com/"));
-        std::fs::remove_dir_all(dir).unwrap();
+        // Best effort: Windows won't delete the database while the manager still has it open.
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
