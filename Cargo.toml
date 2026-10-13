@@ -1,0 +1,52 @@
+[package]
+name = "shard"
+version = "0.1.0"
+edition = "2024"
+description = "A segmented download manager: every file comes down in parallel shards"
+
+[dependencies]
+bytes = "1.12.1"
+gpui-kit = "0.7"
+keepawake = "0.6"
+percent-encoding = "2.3.2"
+reqwest = "0.13.5"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+url = "2.5.8"
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["test-util"] }
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.34"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_HiDpi"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = "0.26"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# StatusNotifierItem over D-Bus, so the tray needs no GTK.
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication", "NSScreen"] }
+
+# `cargo deb` (Linux .deb). Wayland and Vulkan are loaded at run time, so $auto can't see them.
+[package.metadata.deb]
+maintainer = "Shard developers"
+section = "net"
+depends = "$auto, libwayland-client0, libvulkan1"
+extended-description = "Shard splits every download into parts fetched over parallel connections, resumes after pauses and crashes, and takes downloads over from the browser extension."
+assets = [
+    ["target/release/shard", "usr/bin/", "755"],
+    ["packaging/linux/shard.desktop", "usr/share/applications/", "644"],
+    ["assets/icons/png/shard-32.png", "usr/share/icons/hicolor/32x32/apps/shard.png", "644"],
+    ["assets/icons/png/shard-48.png", "usr/share/icons/hicolor/48x48/apps/shard.png", "644"],
+    ["assets/icons/png/shard-64.png", "usr/share/icons/hicolor/64x64/apps/shard.png", "644"],
+    ["assets/icons/png/shard-128.png", "usr/share/icons/hicolor/128x128/apps/shard.png", "644"],
+    ["assets/icons/png/shard-256.png", "usr/share/icons/hicolor/256x256/apps/shard.png", "644"],
+    ["assets/icons/png/shard-512.png", "usr/share/icons/hicolor/512x512/apps/shard.png", "644"],
+]

@@ -1,0 +1,202 @@
+# Push a tag vX.Y.Z (matching Cargo.toml's version) to build every platform and publish a GitHub
+# release with checksums. Run it by hand (workflow_dispatch) to build the packages without releasing.
+#
+# Optional secrets; each step that needs one is skipped without it:
+#   macOS signing and notarising: MACOS_CERTIFICATE (a Developer ID Application .p12, base64),
+#     MACOS_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
+#   Chrome Web Store: CWS_EXTENSION_ID, CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build for Apple silicon and Intel, then join them
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p target/universal
+          lipo -create -output target/universal/shard \
+            target/aarch64-apple-darwin/release/shard target/x86_64-apple-darwin/release/shard
+      - name: Load the Developer ID certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE"; exit 1; }
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Bundle Shard.app
+        run: BIN=target/universal/shard scripts/bundle-macos.sh
+      - name: Disk image
+        run: |
+          dmg="Shard-$VERSION-macos-universal.dmg"
+          mkdir dmg && cp -R target/release/Shard.app dmg/ && ln -s /Applications dmg/Applications
+          # hdiutil sometimes fails with "Resource busy" on hosted runners; a retry gets past it.
+          for attempt in 1 2 3; do
+            hdiutil create -volname Shard -srcfolder dmg -ov -format UDZO "$dmg" && break
+            sleep 5
+          done
+          [ -f "$dmg" ]
+          if [ -n "${SIGN_IDENTITY:-}" ]; then codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg"; fi
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+      - name: Notarise
+        if: env.SIGN_IDENTITY != '' && env.APPLE_ID != ''
+        run: |
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: ${{ env.DMG }}
+
+  windows:
+    needs: version
+    runs-on: windows-2022
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      AWS_LC_SYS_PREBUILT_NASM: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "Shard-$env:VERSION-windows-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target/release/shard.exe "$name/Shard.exe"
+          Copy-Item README.md $name
+          Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Shard-*-windows-x64.zip
+
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x64
+            deb: amd64
+          # GitHub's arm64 Linux runners are free for public repositories; drop this for a private one.
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+            deb: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/linux-deps.sh
+      # Built on 22.04, so the binary runs on any distribution with glibc 2.35 or later.
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          name="shard-$VERSION-linux-${{ matrix.arch }}"
+          mkdir "$name"
+          cp target/release/shard packaging/linux/shard.desktop README.md "$name/"
+          cp assets/icons/png/shard-512.png "$name/shard.png"
+          tar czf "$name.tar.gz" "$name"
+          cargo install cargo-deb --locked
+          cargo deb --no-build --output "shard_${VERSION}_${{ matrix.deb }}.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            shard-*-linux-*.tar.gz
+            shard_*.deb
+
+  extension:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+      CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package
+        run: |
+          python3 - <<'PY'
+          import json, os
+          path = "extension/manifest.json"
+          manifest = json.load(open(path))
+          manifest["version"] = os.environ["VERSION"]
+          open(path, "w").write(json.dumps(manifest, indent=2) + "\n")
+          PY
+          (cd extension && zip -r "../shard-extension-$VERSION.zip" manifest.json background.js icons)
+      - name: Publish to the Chrome Web Store
+        if: github.ref_type == 'tag' && env.REFRESH_TOKEN != ''
+        run: npx --yes chrome-webstore-upload-cli@3 upload --source "shard-extension-$VERSION.zip" --auto-publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: shard-extension-*.zip
+
+  release:
+    needs: [macos, windows, linux, extension]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

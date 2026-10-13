@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Shard
+GenericName=Download Manager
+Comment=Download files over parallel connections, with pause and resume
+Exec=shard %u
+Icon=shard
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;manager;segmented;resume;
