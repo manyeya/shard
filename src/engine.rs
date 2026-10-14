@@ -31,6 +31,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 const MIN_PART: u64 = 256 * 1024;
 /// Failed attempts in a row, without a byte of progress, before giving up.
 const RETRIES: u32 = 5;
+/// After a server refuses a connection (429/503), how long to wait before trying one more; it
+/// doubles each time the extra one is refused again, up to `REGROW_MAX`.
+#[cfg(not(test))]
+const REGROW_AFTER: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const REGROW_AFTER: Duration = Duration::from_millis(100);
+const REGROW_MAX: Duration = Duration::from_secs(240);
+#[cfg(not(test))]
+const REGROW_TICK: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const REGROW_TICK: Duration = Duration::from_millis(25);
 
 #[derive(Clone)]
 pub struct Source {
@@ -269,15 +280,24 @@ pub async fn fetch(
     progress.publish(&plan);
 
     let n = connections.max(1);
-    let ctx = Arc::new(Ctx { net: net.clone(), src: src.clone(), plan: Mutex::new(plan), active: AtomicUsize::new(n) });
+    let ctx = Arc::new(Ctx {
+        net: net.clone(),
+        src: src.clone(),
+        plan: Mutex::new(plan),
+        active: AtomicUsize::new(n),
+        refused_at: Mutex::new(None),
+    });
     let (tx, mut rx) = mpsc::channel(64);
     let mut workers = JoinSet::new(); // dropped on return, which aborts any still running
     for _ in 0..n {
         workers.spawn(worker(ctx.clone(), tx.clone()));
     }
+    // Weak, so the channel still closes when every worker is done; regrowing upgrades it.
+    let spare = tx.downgrade();
     drop(tx);
 
     let (mut saved_at, mut published_at) = (Instant::now(), Instant::now());
+    let (mut regrow, mut regrow_after, mut regrown_at) = (tokio::time::interval(REGROW_TICK), REGROW_AFTER, None::<Instant>);
     let outcome = loop {
         tokio::select! {
             msg = rx.recv() => {
@@ -299,6 +319,23 @@ pub async fn fetch(
             }
             Some(r) = workers.join_next() => r??,
             () = stopped(&mut stop) => break Outcome::Stopped,
+            _ = regrow.tick() => {
+                // A server that refused one connection too many may take it now: try one more.
+                let Some(refused) = *ctx.refused_at.lock().unwrap() else { continue };
+                if regrown_at.is_some_and(|t| refused > t) {
+                    // The last extra one was refused too: wait longer before the next.
+                    regrow_after = (regrow_after * 2).min(REGROW_MAX);
+                    regrown_at = None;
+                }
+                let quiet = refused.elapsed() >= regrow_after && regrown_at.is_none_or(|t| t.elapsed() >= regrow_after);
+                if quiet && ctx.active.load(Relaxed) < n && ctx.plan.lock().unwrap().splittable() {
+                    if let Some(tx) = spare.upgrade() {
+                        ctx.active.fetch_add(1, Relaxed);
+                        workers.spawn(worker(ctx.clone(), tx));
+                        regrown_at = Some(Instant::now());
+                    }
+                }
+            }
         }
     };
     progress.connections.store(0, Relaxed);
@@ -404,6 +441,11 @@ impl Plan {
         s
     }
 
+    /// Whether `take` would find work for another worker.
+    fn splittable(&self) -> bool {
+        self.parts.iter().any(|p| (!p.busy && p.sent < p.end) || (p.busy && p.end - p.sent >= 2 * MIN_PART))
+    }
+
     /// Work for an idle worker: a part nobody is on, else the back half of the busy part with the most left.
     fn take(&mut self) -> Option<usize> {
         if let Some(i) = self.parts.iter().position(|p| !p.busy && p.sent < p.end) {
@@ -428,6 +470,8 @@ struct Ctx {
     plan: Mutex<Plan>,
     /// Workers still running; one too many for the server retires itself.
     active: AtomicUsize,
+    /// When the server last refused a connection (429/503).
+    refused_at: Mutex<Option<Instant>>,
 }
 
 type Chunks = mpsc::Sender<(usize, u64, Bytes)>;
@@ -508,6 +552,9 @@ async fn worker(ctx: Arc<Ctx>, tx: Chunks) -> Result<()> {
             ctx.release(i);
             (current, failures) = (None, 0);
             continue;
+        }
+        if matches!(fail, Some(Fail::Busy(_))) {
+            *ctx.refused_at.lock().unwrap() = Some(Instant::now());
         }
         // One connection too many for this server: hand the part back and retire, unless we're the last.
         if matches!(fail, Some(Fail::Busy(_))) && ctx.active.try_update(Relaxed, Relaxed, |n| (n > 1).then(|| n - 1)).is_ok() {
@@ -590,6 +637,12 @@ pub(crate) mod tests {
         ranges: Mutex<Vec<(u64, u64)>>,
         refused: AtomicUsize,
         open: AtomicUsize,
+        /// Connections served at once, at most; above it the server answers 429.
+        max_conns: AtomicUsize,
+        /// Milliseconds between 64 KB chunks.
+        delay: AtomicU64,
+        /// The most connections being served at once.
+        peak: AtomicUsize,
     }
 
     /// A local server that honours Range, refuses (429) past `max_conns` open connections, and
@@ -598,6 +651,8 @@ pub(crate) mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/some%20file.bin", listener.local_addr().unwrap());
         let log = Arc::new(Log::default());
+        log.max_conns.store(max_conns, SeqCst);
+        log.delay.store(2, SeqCst);
         let shared = log.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -610,10 +665,12 @@ pub(crate) mod tests {
                             range = (a.parse().unwrap(), b.parse().unwrap());
                         }
                     }
-                    if log.open.fetch_add(1, SeqCst) >= max_conns {
+                    let open = log.open.fetch_add(1, SeqCst);
+                    if open >= log.max_conns.load(SeqCst) {
                         log.refused.fetch_add(1, SeqCst);
                         let _ = (&stream).write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     } else {
+                        log.peak.fetch_max(open + 1, SeqCst);
                         log.ranges.lock().unwrap().push(range);
                         let slice = &body[range.0 as usize..=range.1 as usize];
                         let head = format!(
@@ -628,7 +685,7 @@ pub(crate) mod tests {
                             if (&stream).write_all(c).is_err() {
                                 break;
                             }
-                            std::thread::sleep(Duration::from_millis(2));
+                            std::thread::sleep(Duration::from_millis(log.delay.load(SeqCst)));
                         }
                     }
                     log.open.fetch_sub(1, SeqCst);
@@ -702,6 +759,29 @@ pub(crate) mod tests {
         assert_eq!(outcome.unwrap(), Outcome::Done);
         assert_eq!(std::fs::read(&out).unwrap(), *body);
         assert!(log.refused.load(SeqCst) > 0, "the server never had to refuse, so nothing was tested");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connections_grow_back_when_the_server_allows_more() {
+        let body: Arc<Vec<u8>> = Arc::new((0..6_000_000usize).map(|i| (i * 13 % 251) as u8).collect());
+        let (url, log) = serve(body.clone(), 2);
+        log.delay.store(6, SeqCst);
+        let dir = scratch("regrow");
+        let out = dir.join("file.bin");
+        let (net, src) = (Net::new(), Source { url, headers: HeaderMap::new() });
+        let (_stop, rx) = watch::channel(false);
+        let raise = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            log.peak.store(0, SeqCst);
+            log.max_conns.store(8, SeqCst);
+        };
+        let (found, progress) = (probe(&net, &src).await.unwrap(), Progress::default());
+        let (outcome, ()) = tokio::join!(fetch(&net, &src, found, &out, 8, &progress, rx), raise);
+        assert_eq!(outcome.unwrap(), Outcome::Done);
+        assert_eq!(std::fs::read(&out).unwrap(), *body);
+        assert!(log.refused.load(SeqCst) > 0, "the server never refused, so nothing was tested");
+        assert!(log.peak.load(SeqCst) > 2, "connections never grew back past the old limit: peak {}", log.peak.load(SeqCst));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
