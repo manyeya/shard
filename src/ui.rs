@@ -5495,6 +5495,7 @@ mod tests {
             added: 0,
             parts,
             history: vec![],
+            position: 0,
         };
         let mut g = super::GraphAnim::default();
         for _ in 0..200 {

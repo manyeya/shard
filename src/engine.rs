@@ -43,11 +43,14 @@ const REGROW_TICK: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const REGROW_TICK: Duration = Duration::from_millis(25);
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Source {
     pub url: String,
     /// Sent with every request: cookies, referrer and user agent from the browser.
     pub headers: HeaderMap,
+    /// A fresh link for a file already part-downloaded. Another server may give the same file a
+    /// different ETag, so resume when the size matches even if the validator doesn't.
+    pub refreshed: bool,
 }
 
 /// Live numbers for the UI, written by `fetch`.
@@ -266,9 +269,12 @@ pub async fn fetch(
         .await
         .ok()
         .and_then(|s| Plan::parse(&s))
-        .filter(|c| c.len == len && c.validator == probe.validator && part.exists());
+        .filter(|c| c.len == len && (c.validator == probe.validator || src.refreshed) && part.exists());
     let (mut file, plan) = match saved {
-        Some(c) => (OpenOptions::new().write(true).open(&part).await?, c),
+        Some(mut c) => {
+            c.validator = probe.validator.clone(); // the new server's, for If-Range
+            (OpenOptions::new().write(true).open(&part).await?, c)
+        }
         None => {
             let f = File::create(&part).await?;
             f.set_len(len).await?;
@@ -643,6 +649,8 @@ pub(crate) mod tests {
         delay: AtomicU64,
         /// The most connections being served at once.
         peak: AtomicUsize,
+        /// The ETag it sends; "v1" unless a test changes it.
+        etag: Mutex<String>,
     }
 
     /// A local server that honours Range, refuses (429) past `max_conns` open connections, and
@@ -653,6 +661,7 @@ pub(crate) mod tests {
         let log = Arc::new(Log::default());
         log.max_conns.store(max_conns, SeqCst);
         log.delay.store(2, SeqCst);
+        *log.etag.lock().unwrap() = "\"v1\"".into();
         let shared = log.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -674,11 +683,12 @@ pub(crate) mod tests {
                         log.ranges.lock().unwrap().push(range);
                         let slice = &body[range.0 as usize..=range.1 as usize];
                         let head = format!(
-                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nETag: {}\r\nConnection: close\r\n\r\n",
                             slice.len(),
                             range.0,
                             range.1,
-                            body.len()
+                            body.len(),
+                            log.etag.lock().unwrap()
                         );
                         let _ = (&stream).write_all(head.as_bytes());
                         for c in slice.chunks(64 * 1024) {
@@ -712,7 +722,7 @@ pub(crate) mod tests {
         let (url, log) = serve(body.clone(), 100);
         let dir = scratch("resume");
         let out = dir.join("file.bin");
-        let (net, src) = (Net::new(), Source { url, headers: HeaderMap::new() });
+        let (net, src) = (Net::new(), Source { url, ..Default::default() });
 
         let probe1 = probe(&net, &src).await.unwrap();
         assert_eq!(probe1.name, "some file.bin");
@@ -748,12 +758,51 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_refreshed_link_resumes_though_its_etag_changed() {
+        let body = body();
+        let (url, log) = serve(body.clone(), 100);
+        let dir = scratch("refresh");
+        let out = dir.join("file.bin");
+        let net = Net::new();
+        let src = Source { url, ..Default::default() };
+
+        // Half-download, then pause.
+        let progress = Progress::default();
+        let (stop, rx) = watch::channel(false);
+        let pause = async {
+            while progress.done.load(SeqCst) < body.len() as u64 / 3 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            stop.send(true).unwrap();
+        };
+        let (outcome, ()) = tokio::join!(fetch(&net, &src, probe(&net, &src).await.unwrap(), &out, 2, &progress, rx), pause);
+        assert_eq!(outcome.unwrap(), Outcome::Stopped);
+        let plan = Plan::parse(&std::fs::read_to_string(sibling(&out, ".resume")).unwrap()).unwrap();
+        let on_disk: Vec<_> = plan.parts.iter().map(|p| (p.start, p.done)).filter(|(s, d)| d > s).collect();
+
+        // The new link's server tags the same file differently. As a refresh it resumes anyway.
+        *log.etag.lock().unwrap() = "\"v2-other-cdn\"".into();
+        log.ranges.lock().unwrap().clear();
+        let fresh = Source { refreshed: true, ..src.clone() };
+        let (_stop, rx) = watch::channel(false);
+        let outcome = fetch(&net, &fresh, probe(&net, &fresh).await.unwrap(), &out, 4, &Progress::default(), rx).await;
+        assert_eq!(outcome.unwrap(), Outcome::Done);
+        assert_eq!(std::fs::read(&out).unwrap(), *body);
+        for &(a, b) in log.ranges.lock().unwrap().iter().filter(|r| **r != (0, 0)) {
+            for &(s, d) in &on_disk {
+                assert!(b < s || a >= d, "refetched {a}-{b}, which overlaps {s}..{d} already on disk");
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn backs_off_to_the_servers_connection_limit() {
         let body = body();
         let (url, log) = serve(body.clone(), 3);
         let dir = scratch("limit");
         let out = dir.join("file.bin");
-        let (net, src) = (Net::new(), Source { url, headers: HeaderMap::new() });
+        let (net, src) = (Net::new(), Source { url, ..Default::default() });
         let (_stop, rx) = watch::channel(false);
         let outcome = fetch(&net, &src, probe(&net, &src).await.unwrap(), &out, 8, &Progress::default(), rx).await;
         assert_eq!(outcome.unwrap(), Outcome::Done);
@@ -769,7 +818,7 @@ pub(crate) mod tests {
         log.delay.store(6, SeqCst);
         let dir = scratch("regrow");
         let out = dir.join("file.bin");
-        let (net, src) = (Net::new(), Source { url, headers: HeaderMap::new() });
+        let (net, src) = (Net::new(), Source { url, ..Default::default() });
         let (_stop, rx) = watch::channel(false);
         let raise = async {
             tokio::time::sleep(Duration::from_millis(100)).await;

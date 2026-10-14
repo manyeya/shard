@@ -72,6 +72,8 @@ pub struct Row {
     pub parts: Vec<Segment>,
     /// Speed once a second, oldest first, for the last minute of its latest run.
     pub history: Vec<u64>,
+    /// Place among the downloads waiting to run (1 is next); 0 for the rest.
+    pub position: usize,
 }
 
 /// One part of a download. Positions are fractions of the file.
@@ -99,6 +101,80 @@ pub struct Settings {
     pub keep_awake: bool,
     /// Start Shard, hidden in the tray, at login. Read from (and written to) the system itself.
     pub launch_at_login: bool,
+    /// A system notification when a download finishes or fails.
+    pub notify: bool,
+    /// Ask for a folder each time a link is added in the window.
+    pub ask_where: bool,
+    /// Put each file in a folder for its kind: Video, Music, Archives, Documents, Programs, Other.
+    pub sort_into_folders: bool,
+    /// Offer to download links copied to the clipboard.
+    pub watch_clipboard: bool,
+    /// Resume paused downloads at this local time, (hour, minute).
+    pub start_at: Option<(u8, u8)>,
+    /// Pause the queue at this local time.
+    pub stop_at: Option<(u8, u8)>,
+    /// What to do once the queue has finished.
+    pub when_done: WhenDone,
+    /// Check for, and download, new versions of Shard.
+    pub auto_update: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WhenDone {
+    Nothing,
+    Sleep,
+    ShutDown,
+}
+
+impl WhenDone {
+    fn as_str(self) -> &'static str {
+        match self {
+            WhenDone::Nothing => "nothing",
+            WhenDone::Sleep => "sleep",
+            WhenDone::ShutDown => "shut down",
+        }
+    }
+
+    fn parse(s: &str) -> WhenDone {
+        match s {
+            "sleep" => WhenDone::Sleep,
+            "shut down" => WhenDone::ShutDown,
+            _ => WhenDone::Nothing,
+        }
+    }
+}
+
+/// "HH:MM" to (hour, minute); None for anything else, including an empty string.
+pub fn parse_clock(s: &str) -> Option<(u8, u8)> {
+    let (h, m) = s.trim().split_once(':')?;
+    let (h, m) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+pub fn format_clock(t: Option<(u8, u8)>) -> String {
+    t.map_or_else(String::new, |(h, m)| format!("{h:02}:{m:02}"))
+}
+
+/// The kind of file a name is, by its extension: the folder it goes in with `sort_into_folders`.
+pub fn category(name: &str) -> &'static str {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "zip" | "rar" | "7z" | "tar" | "gz" | "tgz" | "xz" | "bz2" | "zst" | "iso" | "img" | "dmg" => "Archives",
+        "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "wmv" | "flv" | "ts" => "Video",
+        "mp3" | "flac" | "wav" | "m4a" | "aac" | "ogg" | "opus" => "Music",
+        "pdf" | "epub" | "mobi" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "csv" | "odt" => "Documents",
+        "exe" | "msi" | "pkg" | "deb" | "rpm" | "appimage" | "apk" | "app" => "Programs",
+        _ => "Other",
+    }
+}
+
+/// Where a download moves to in the queue.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Move {
+    Top,
+    Up,
+    Down,
+    Bottom,
 }
 
 pub struct Manager {
@@ -108,6 +184,8 @@ pub struct Manager {
     awake: crate::system::Awake,
     /// Asks from another `shard` launch to show the window; the UI watches it change.
     shows: std::sync::atomic::AtomicU64,
+    /// Goes up each time the queue finishes (the last download done, nothing waiting).
+    drained: std::sync::atomic::AtomicU64,
     inner: Mutex<Inner>,
 }
 
@@ -120,6 +198,8 @@ struct Inner {
     throughput: VecDeque<u64>,
     /// Whether `awake` is holding the computer awake.
     awake_on: bool,
+    /// The local (hour, minute) the scheduler last looked at, so it acts once per minute.
+    clock: Option<(u8, u8)>,
 }
 
 /// Seconds of speed history kept.
@@ -148,6 +228,8 @@ struct Item {
     part_speed: HashMap<u64, (u64, u64)>,
     /// Removed while its task was still stopping: drop it when the task ends (deleting the file if true).
     doomed: Option<bool>,
+    /// Its link was just replaced: the next run may resume though the server's validator changed.
+    refreshed: bool,
 }
 
 impl Item {
@@ -157,7 +239,7 @@ impl Item {
             (Some(n), s) if s != Status::Done => engine::saved_parts(&rec.dir.join(n)),
             _ => Vec::new(),
         };
-        Item { rec, status, headers, progress: Arc::default(), stop: None, speed: 0, seen: None, history: VecDeque::new(), parts, part_speed: HashMap::new(), doomed: None }
+        Item { rec, status, headers, progress: Arc::default(), stop: None, speed: 0, seen: None, history: VecDeque::new(), parts, part_speed: HashMap::new(), doomed: None, refreshed: false }
     }
 
     fn path(&self) -> Option<PathBuf> {
@@ -213,6 +295,14 @@ impl Manager {
             speed_limit: db.setting("speed_limit").and_then(|v| v.parse().ok()).unwrap_or(0),
             keep_awake: db.setting("keep_awake").is_none_or(|v| v == "true"),
             launch_at_login: crate::system::launch_at_login(),
+            notify: db.setting("notify").is_none_or(|v| v == "true"),
+            ask_where: db.setting("ask_where").is_some_and(|v| v == "true"),
+            sort_into_folders: db.setting("sort_into_folders").is_some_and(|v| v == "true"),
+            watch_clipboard: db.setting("watch_clipboard").is_none_or(|v| v == "true"),
+            start_at: db.setting("start_at").and_then(|v| parse_clock(&v)),
+            stop_at: db.setting("stop_at").and_then(|v| parse_clock(&v)),
+            when_done: db.setting("when_done").map_or(WhenDone::Nothing, |v| WhenDone::parse(&v)),
+            auto_update: db.setting("auto_update").is_none_or(|v| v == "true"),
         };
         let net = Net::new();
         net.limit.set(settings.speed_limit);
@@ -234,7 +324,8 @@ impl Manager {
             net,
             awake: crate::system::Awake::new(),
             shows: Default::default(),
-            inner: Mutex::new(Inner { db, settings, items, throughput: VecDeque::new(), awake_on: false }),
+            drained: Default::default(),
+            inner: Mutex::new(Inner { db, settings, items, throughput: VecDeque::new(), awake_on: false, clock: None }),
         });
         m.schedule(&mut m.lock());
         let me = Arc::downgrade(&m);
@@ -255,6 +346,7 @@ impl Manager {
     /// Every download, newest first.
     pub fn rows(&self) -> Vec<Row> {
         let inner = self.lock();
+        let waiting: Vec<Id> = inner.items.iter().filter(|i| i.status == Status::Queued).map(|i| i.rec.id).collect();
         inner
             .items
             .iter()
@@ -290,6 +382,7 @@ impl Manager {
                         if total == 0 { Vec::new() } else { parts.iter().map(seg).collect() }
                     },
                     history: i.history.iter().copied().collect(),
+                    position: waiting.iter().position(|w| *w == i.rec.id).map_or(0, |n| n + 1),
                 }
             })
             .collect()
@@ -302,13 +395,21 @@ impl Manager {
 
     /// Queue a URL with the browser's cookies, referrer and user agent.
     pub fn add_with_headers(&self, url: &str, headers: HeaderMap) -> Result<Id, String> {
-        let parsed = url::Url::parse(url.trim()).map_err(|_| "That isn't a valid link.".to_string())?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err("Only http and https links can be downloaded.".into());
-        }
+        self.add_into(url, headers, None)
+    }
+
+    /// Queue a URL to save in `dir` instead of the download folder.
+    pub fn add_to(&self, url: &str, dir: PathBuf) -> Result<Id, String> {
+        self.add_into(url, HeaderMap::new(), Some(dir))
+    }
+
+    fn add_into(&self, url: &str, headers: HeaderMap, dir: Option<PathBuf>) -> Result<Id, String> {
+        let parsed = parse_link(url)?;
         let mut inner = self.lock();
-        let (text, dir, added) = (header_text(&headers), inner.settings.dir.clone(), now());
+        let (text, added) = (header_text(&headers), now());
+        let dir = dir.unwrap_or_else(|| inner.settings.dir.clone());
         let id = inner.db.insert(parsed.as_str(), &text, &dir, "queued", added).map_err(|e| e.to_string())?;
+        let position = inner.db.position(id).map_err(|e| e.to_string())?;
         let rec = Saved {
             id,
             url: parsed.into(),
@@ -321,6 +422,7 @@ impl Manager {
             resumable: None,
             error: None,
             added,
+            position,
         };
         inner.items.push(Item::new(rec, Status::Queued));
         self.schedule(&mut inner);
@@ -403,6 +505,53 @@ impl Manager {
         self.lock().settings.clone()
     }
 
+    /// Give a download a fresh link (its old one expired), keeping what's downloaded when the
+    /// file's size is the same, and queue it again.
+    pub fn refresh_link(&self, id: Id, url: &str) -> Result<(), String> {
+        let parsed = parse_link(url)?;
+        let mut found = false;
+        self.with(id, |it| {
+            found = true;
+            if it.stop.is_some() {
+                return;
+            }
+            it.rec.url = parsed.into();
+            (it.refreshed, it.rec.error) = (true, None);
+            if it.status != Status::Done {
+                it.status = Status::Queued;
+            }
+        });
+        found.then_some(()).ok_or_else(|| "That download is gone.".into())
+    }
+
+    /// Move a download within the queue; waiting downloads start from the top.
+    pub fn move_to(&self, id: Id, to: Move) {
+        let mut inner = self.lock();
+        let Inner { db, items, .. } = &mut *inner;
+        let Some(at) = items.iter().position(|i| i.rec.id == id) else { return };
+        let it = items.remove(at);
+        let to = match to {
+            Move::Top => 0,
+            Move::Up => at.saturating_sub(1),
+            Move::Down => (at + 1).min(items.len()),
+            Move::Bottom => items.len(),
+        };
+        items.insert(to, it);
+        for (n, it) in items.iter_mut().enumerate() {
+            let position = n as i64 + 1;
+            if it.rec.position != position {
+                it.rec.position = position;
+                it.save(db);
+            }
+        }
+        self.schedule(&mut inner);
+    }
+
+    /// Goes up by one each time the queue finishes: its last download done and nothing waiting.
+    pub fn drained(&self) -> u64 {
+        self.drained.load(Relaxed)
+    }
+
     /// Ask the window to show itself (another `shard` was launched while this one runs).
     pub fn request_show(&self) {
         self.shows.fetch_add(1, Relaxed);
@@ -427,6 +576,14 @@ impl Manager {
             ("connections", s.connections.to_string()),
             ("speed_limit", s.speed_limit.to_string()),
             ("keep_awake", s.keep_awake.to_string()),
+            ("notify", s.notify.to_string()),
+            ("ask_where", s.ask_where.to_string()),
+            ("sort_into_folders", s.sort_into_folders.to_string()),
+            ("watch_clipboard", s.watch_clipboard.to_string()),
+            ("start_at", format_clock(s.start_at)),
+            ("stop_at", format_clock(s.stop_at)),
+            ("when_done", s.when_done.as_str().to_string()),
+            ("auto_update", s.auto_update.to_string()),
         ] {
             inner.db.set_setting(k, &v).map_err(|e| e.to_string())?;
         }
@@ -466,7 +623,7 @@ impl Manager {
         it.progress.total.store(it.rec.total, Relaxed);
         let job = Job {
             id: it.rec.id,
-            src: Source { url: it.rec.url.clone(), headers: it.headers.clone() },
+            src: Source { url: it.rec.url.clone(), headers: it.headers.clone(), refreshed: std::mem::take(&mut it.refreshed) },
             connections,
             progress: it.progress.clone(),
         };
@@ -482,9 +639,12 @@ impl Manager {
     /// The first run of a download names it: what the server suggests, made unique in its folder.
     fn named(&self, id: Id, probe: &Probe) -> engine::Result<PathBuf> {
         let mut inner = self.lock();
-        let Inner { db, items, .. } = &mut *inner;
+        let Inner { db, items, settings, .. } = &mut *inner;
         let taken: Vec<PathBuf> = items.iter().filter(|i| i.rec.id != id).filter_map(Item::path).collect();
         let it = items.iter_mut().find(|i| i.rec.id == id).ok_or("removed")?;
+        if it.rec.name.is_none() && settings.sort_into_folders {
+            it.rec.dir = it.rec.dir.join(category(&probe.name));
+        }
         std::fs::create_dir_all(&it.rec.dir)?;
         if it.rec.name.is_none() {
             it.rec.name = Some(unique(&it.rec.dir, &probe.name, |p| taken.iter().any(|t| t == p)));
@@ -506,7 +666,8 @@ impl Manager {
         it.save(db); // last progress, while `stop` still says it was live
         (it.stop, it.speed) = (None, 0);
         it.parts = std::mem::take(&mut *it.progress.parts.lock().unwrap());
-        if result.as_ref().is_ok_and(|o| *o == Outcome::Done) {
+        let finished_ok = result.as_ref().is_ok_and(|o| *o == Outcome::Done);
+        if finished_ok {
             it.status = Status::Done;
             it.rec.total = it.rec.total.max(it.rec.done); // known now, even if the server never said
             it.rec.done = it.rec.total;
@@ -523,6 +684,11 @@ impl Manager {
             it.save(db);
         }
         self.schedule(&mut inner);
+        // The queue finished: this one done, nothing running or waiting.
+        let idle = inner.items.iter().all(|i| i.stop.is_none() && i.status != Status::Queued);
+        if idle && finished_ok {
+            self.drained.fetch_add(1, Relaxed);
+        }
     }
 
     /// Once a second: sample speeds and save progress.
@@ -551,6 +717,36 @@ impl Manager {
         }
         push(throughput, total);
         self.stay_awake(&mut inner);
+        self.keep_schedule(&mut inner, chrono::Local::now());
+    }
+
+    /// Resume paused downloads at `start_at`, pause the queue at `stop_at`, once per minute.
+    fn keep_schedule(&self, inner: &mut Inner, now: chrono::DateTime<chrono::Local>) {
+        use chrono::Timelike;
+        let clock = Some((now.hour() as u8, now.minute() as u8));
+        if inner.clock == clock {
+            return;
+        }
+        inner.clock = clock;
+        let change: Option<fn(&mut Item)> = if clock == inner.settings.start_at {
+            Some(|it| {
+                if it.status == Status::Paused {
+                    it.status = Status::Queued;
+                }
+            })
+        } else if clock == inner.settings.stop_at {
+            Some(pause)
+        } else {
+            None
+        };
+        if let Some(change) = change {
+            let Inner { db, items, .. } = &mut *inner;
+            for it in items.iter_mut().filter(|i| i.doomed.is_none()) {
+                change(it);
+                it.save(db);
+            }
+            self.schedule(inner);
+        }
     }
 }
 
@@ -595,6 +791,15 @@ fn unique(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> String {
         .expect("some name is free")
 }
 
+/// A link Shard can download: http or https. Err is a message for the user.
+fn parse_link(url: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(url.trim()).map_err(|_| "That isn't a valid link.".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Only http and https links can be downloaded.".into());
+    }
+    Ok(parsed)
+}
+
 fn header_text(h: &HeaderMap) -> String {
     h.iter().filter_map(|(k, v)| Some(format!("{k}: {}\n", v.to_str().ok()?))).collect()
 }
@@ -616,6 +821,7 @@ fn now() -> i64 {
 pub(crate) mod tests {
     use super::*;
     use crate::engine::tests::{body, scratch, serve};
+    use chrono::Timelike;
 
     pub(crate) async fn wait_until(m: &Manager, done: impl Fn(&[Row]) -> bool) -> Vec<Row> {
         for _ in 0..400 {
@@ -626,6 +832,50 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("timed out: {:?}", m.rows());
+    }
+
+    #[test]
+    fn categories_and_clock_times() {
+        assert_eq!(category("Big Buck Bunny.MP4"), "Video");
+        assert_eq!(category("ubuntu.iso"), "Archives");
+        assert_eq!(category("README"), "Other");
+        assert_eq!(parse_clock("07:05"), Some((7, 5)));
+        assert_eq!((parse_clock("24:00"), parse_clock(""), parse_clock("7")), (None, None, None));
+        assert_eq!(format_clock(Some((7, 5))), "07:05");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orders_sorts_into_folders_and_keeps_the_schedule() {
+        let body = body();
+        let (url, _log) = serve(body.clone(), 100);
+        let dir = scratch("queue-order");
+        let dl = dir.join("dl");
+        let m = Manager::open(&dir.join("shard.db"), dl.clone(), Handle::current()).unwrap();
+        m.set_settings(Settings { dir: dl.clone(), max_active: 1, sort_into_folders: true, ..m.settings() }).unwrap();
+        m.pause_all();
+        let (a, b) = (m.add(&format!("{url}?a")).unwrap(), m.add_to(&format!("{url}?b"), dir.join("elsewhere")).unwrap());
+        let c = m.add(&format!("{url}?c")).unwrap();
+        // `a` started at once (a free slot); `b` and `c` wait, in that order. Move `c` up front.
+        m.move_to(c, Move::Top);
+        let pos = |id| m.rows().iter().find(|r| r.id == id).unwrap().position;
+        assert_eq!((pos(c), pos(b)), (1, 2), "moved to the top of the waiting line");
+
+        // At its stop time the scheduler pauses everything; at its start time it resumes them.
+        let at = |h, mi| chrono::Local::now().with_hour(h).unwrap().with_minute(mi).unwrap();
+        m.set_settings(Settings { start_at: Some((6, 0)), stop_at: Some((23, 0)), ..m.settings() }).unwrap();
+        m.keep_schedule(&mut m.lock(), at(23, 0));
+        assert!(m.rows().iter().all(|r| matches!(r.status, Status::Paused | Status::Done)), "{:?}", m.rows());
+        m.keep_schedule(&mut m.lock(), at(6, 0));
+        let drained = m.drained();
+        let rows = wait_until(&m, |r| r.iter().all(|r| r.status == Status::Done)).await;
+        assert!(m.drained() > drained, "the queue finishing is counted");
+
+        // Videos go to Video/, and `b` went where it was told (sorted into its own Other/).
+        let path = |id| rows.iter().find(|r| r.id == id).unwrap().path.clone().unwrap();
+        assert!(path(a).starts_with(dl.join("Other")), "{:?}", path(a));
+        assert!(path(b).starts_with(dir.join("elsewhere")), "{:?}", path(b));
+        assert_eq!(std::fs::read(path(c)).unwrap(), *body);
+        let _ = std::fs::remove_dir_all(dir); // Windows keeps the open database locked
     }
 
     #[tokio::test(flavor = "multi_thread")]

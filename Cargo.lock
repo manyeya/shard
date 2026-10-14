@@ -6521,6 +6521,7 @@ name = "shard"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "chrono",
  "gpui-kit",
  "keepawake",
  "objc2 0.6.5",

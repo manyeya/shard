@@ -137,7 +137,7 @@ fn downloads_dir() -> PathBuf {
 /// Download one URL in the terminal.
 async fn get(url: String, out: Option<PathBuf>) -> engine::Result<()> {
     let net = engine::Net::new();
-    let src = engine::Source { url, headers: Default::default() };
+    let src = engine::Source { url, ..Default::default() };
     let probe = engine::probe(&net, &src).await?;
     let out = out.unwrap_or_else(|| probe.name.clone().into());
     let progress = engine::Progress::default();
