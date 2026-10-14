@@ -35,7 +35,7 @@ fn main() {
         ["get", url, ref rest @ ..] if rest.len() <= 1 => {
             let rt = tokio::runtime::Runtime::new().expect("start the tokio runtime");
             if let Err(e) = rt.block_on(get(url.to_string(), rest.first().map(PathBuf::from))) {
-                eprintln!("\nidm: {e}");
+                eprintln!("\nshard: {e}");
                 std::process::exit(1);
             }
         }

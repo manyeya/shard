@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shard: download in shards</title>
+  <meta name="description" content="Shard is a download manager for macOS, Windows and Linux. It cuts every file into parts, fetches them over many connections at once, and carries on wherever it stopped.">
+  <meta name="theme-color" content="#060707">
+  <meta property="og:title" content="Shard: download in shards">
+  <meta property="og:description" content="A download manager that fetches every file in parallel parts, and picks up where it stopped.">
+  <meta property="og:image" content="icon.png">
+  <link rel="icon" href="favicon.png">
+  <link rel="preload" href="fonts/ArchivoExpanded-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<div class="page">
+  <div class="shards" aria-hidden="true">
+    <div class="shard-beam s1"></div>
+    <div class="shard-beam s2"></div>
+    <div class="shard-beam s3"></div>
+    <div class="grain"></div>
+  </div>
+
+  <header class="wrap nav">
+    <a class="brand" href="#top" aria-label="Shard, back to the top">
+      <img src="logo.svg" alt="" width="28" height="28">
+      <span class="disp">Shard</span>
+    </a>
+    <nav class="navlinks" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <a class="nav-github" href="https://github.com/manyeya/shard">GitHub</a>
+  </header>
+
+  <main id="main">
+    <section id="top" class="wrap hero">
+      <a class="pill" href="#features"><span>0.1.0</span>Now with every network at once, and updates that check themselves</a>
+      <h1 class="sliced disp" aria-label="Download in shards.">
+        <span class="line" aria-hidden="true">Download</span>
+        <span class="line" aria-hidden="true">in shards.</span>
+      </h1>
+      <p class="lede">Shard cuts every file into parts, pulls them over eight connections at once and stitches them back together. Quit halfway, lose power, change networks: it carries on from where it stopped.</p>
+      <div class="ctas">
+        <a class="cta" id="get" href="https://github.com/manyeya/shard/releases/latest">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          <span id="get-label">Download Shard</span>
+        </a>
+        <a class="ghost" href="#download">All platforms</a>
+      </div>
+      <p class="mono fine" id="get-note">For macOS, Windows and Linux. Free.</p>
+    </section>
+
+    <section class="wrap console-wrap" aria-label="A simulated download in Shard: a speed gauge, the connections carrying the file, a throughput chart, each connection's speed over time, and the file's parts filling.">
+      <div class="glass">
+        <div class="console-bar">
+          <img src="logo.svg" alt="" width="18" height="18">
+          <span class="console-title">Shard</span>
+          <span class="mono dim">1 downloading, 2 queued</span>
+          <span class="mono live-dot"><i></i><span id="c-state">Downloading</span></span>
+        </div>
+        <div class="console">
+          <div class="cluster">
+            <div class="card gauge-card">
+              <div class="gauge">
+                <canvas id="au-gauge" aria-hidden="true"></canvas>
+                <div class="gauge-read">
+                  <div class="mono gauge-speed" id="g-speed">0.0</div>
+                  <div class="mono gauge-unit">MB/s</div>
+                  <div class="mono gauge-peak">peak <span id="g-peak">0.0</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-h"><span>Server, connections, file</span><span><b id="f-live">8</b> of <span id="f-n">8</span> busy</span></div>
+              <canvas id="au-flow" class="fill" style="height: 330px" aria-hidden="true"></canvas>
+            </div>
+          </div>
+          <div class="cluster2">
+            <div class="card">
+              <div class="card-h"><span>Throughput, stacked by connection</span><span><b id="c-speed">0.0</b> MB/s</span></div>
+              <canvas id="au-chart" class="fill" style="height: 230px" aria-hidden="true"></canvas>
+            </div>
+            <div class="card">
+              <div class="card-h"><span>Each connection over time</span><span>MB/s now</span></div>
+              <canvas id="au-spectro" class="fill" style="height: 230px" aria-hidden="true"></canvas>
+            </div>
+          </div>
+          <div class="file-row">
+            <span class="mono tile-kind">ISO</span>
+            <div class="file-meta">
+              <div class="file-name">ubuntu-24.04-live-server-amd64.iso</div>
+              <div class="mono dim small" id="c-file">0 of 2.69 GB</div>
+            </div>
+            <div class="mono file-stats">
+              <span>Time left <b id="c-eta">Starting</b></span>
+              <span>Parts <b id="c-parts">1</b></span>
+            </div>
+            <span class="mono file-pct" id="c-pct">0%</span>
+          </div>
+          <canvas id="au-map" class="fill" style="height: 62px" aria-hidden="true"></canvas>
+          <p class="caption" id="c-caption">Each flash is a connection cutting the slowest part in two and taking the back half.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap works" aria-label="Works with">
+      <span>Works on macOS, Windows and Linux</span><i></i>
+      <span>Takes over from Chrome, Edge, Brave and Arc</span><i></i>
+      <span>No account, no tracking</span>
+    </section>
+
+    <section id="how" class="wrap section">
+      <h2 class="disp">One file, eight ways at once.</h2>
+      <p class="intro">A normal download is one connection pulling one long stream, so the file is only as fast as that one connection. Shard opens several and keeps every one of them busy until the last byte.</p>
+      <ol class="steps">
+        <li><span class="mono">1</span><h3>Ask</h3><p>Shard asks the server for one byte, which tells it the file's size, its name and whether it can be fetched in pieces.</p></li>
+        <li><span class="mono">2</span><h3>Split</h3><p>The first connection takes the whole file. Each one that opens after it takes the back half of the part with the most left.</p></li>
+        <li><span class="mono">3</span><h3>Take over</h3><p>A connection that finishes early splits the slowest part again, so the last few percent never crawl along on one connection.</p></li>
+        <li><span class="mono">4</span><h3>Write down</h3><p>Every second it notes how far each part got, only once those bytes are on disk. Stop anywhere and the next run carries on.</p></li>
+      </ol>
+    </section>
+
+    <section id="features" class="wrap section">
+      <h2 class="disp">Built for the downloads that go wrong.</h2>
+      <div class="bento">
+        <article class="tile w4">
+          <h3>Backs off when a server says no, then tries again</h3>
+          <p>Some servers allow only a few connections and answer the rest with “too many requests”. Shard drops the refused ones and carries on. Half a minute later it tries one more, waiting twice as long each time it's turned away.</p>
+          <div class="stage">
+            <canvas id="au-limit" class="fill" style="height: 210px" aria-hidden="true"></canvas>
+            <div class="mono note" id="lim-note">Starting with 8 connections</div>
+          </div>
+        </article>
+        <article class="tile">
+          <h3>Picks up where it stopped</h3>
+          <p>Pause, quit, crash or sleep. The next run checks the file hasn't changed on the server and carries on.</p>
+          <div class="stage">
+            <canvas id="au-resume" class="fill" style="height: 190px" aria-hidden="true"></canvas>
+            <div class="mono note center" id="res-note">Downloading</div>
+          </div>
+        </article>
+
+        <article class="tile w3">
+          <h3>Keeps going in the menu bar</h3>
+          <p>Close the window and Shard carries on in the menu bar or tray. The icon fills as files come in, and a click shows everything that's running.</p>
+          <div class="stage tray-stage">
+            <div class="menubar">
+              <span class="mono">Wed 01:12</span>
+              <span class="menubar-shard"><span class="tray-icon"><i id="t-icon"></i></span><span class="mono"><span class="t-speed">0.0</span> MB/s</span></span>
+            </div>
+            <div class="tray">
+              <div class="tray-head">
+                <span><span class="mono tray-big t-speed">0.0</span> <span class="mono dim small">MB/s</span></span>
+                <svg width="120" height="30" viewBox="0 0 120 30" aria-hidden="true"><path id="t-spark" d="M0,28 L120,28" fill="none" stroke="#a3e635" stroke-width="1.5"/></svg>
+              </div>
+              <div class="mono lime small">3 downloading</div>
+              <div class="tray-row"><span class="mono tile-kind sm">ISO</span><div><div class="tray-line"><span>ubuntu-24.04-live-server-amd64.iso</span><span class="mono dim" id="tr0">0%</span></div><span class="meter"><i id="tb0"></i></span></div></div>
+              <div class="tray-row"><span class="mono tile-kind sm">MP4</span><div><div class="tray-line"><span>Big_Buck_Bunny_4K.mp4</span><span class="mono dim" id="tr1">0%</span></div><span class="meter"><i id="tb1"></i></span></div></div>
+              <div class="tray-row"><span class="mono tile-kind sm">ZIP</span><div><div class="tray-line"><span>dataset-2026.zip</span><span class="mono dim" id="tr2">0%</span></div><span class="meter"><i id="tb2"></i></span></div></div>
+            </div>
+          </div>
+        </article>
+        <article class="tile w3">
+          <h3>Uses every network you have</h3>
+          <p>On Wi-Fi and Ethernet, or tethered to your phone? Shard spreads a download's connections across all of them and adds their speeds together.</p>
+          <div class="stage"><canvas id="au-nets" class="fill" style="height: 190px" aria-hidden="true"></canvas></div>
+        </article>
+
+        <article class="tile">
+          <h3>Takes over from your browser</h3>
+          <p>With the extension, downloads you start in Chrome, Edge, Brave or Arc go to Shard, cookies and all.</p>
+          <div class="stage hand">
+            <div class="browser">
+              <div class="mono browser-bar"><i></i><i></i><span>example.com/files</span></div>
+              <div class="browser-body"><div class="mono chip" id="h-chip">report-2026.pdf</div></div>
+            </div>
+            <div class="hand-card" id="h-card">
+              <div class="hand-line"><span class="mono lime-pale tiny">PDF</span><span>report-2026.pdf</span><span class="mono lime" id="h-pct">0%</span></div>
+              <span class="meter"><i id="h-bar"></i></span>
+            </div>
+          </div>
+        </article>
+        <article class="tile">
+          <h3>Runs on a schedule</h3>
+          <p>Start the queue at night, stop it in the morning, then sleep or shut down when it's done.</p>
+          <div class="stage dial-stage">
+            <canvas id="au-dial" style="width: 140px; height: 140px" aria-hidden="true"></canvas>
+            <div><div class="mono dial-time" id="s-time">00:00</div><div class="dial-state" id="s-state">Queued. Starts at 01:00.</div></div>
+          </div>
+        </article>
+        <article class="tile">
+          <h3>Refresh an expired link</h3>
+          <p>Links that stop working halfway don't mean starting again. Paste a fresh one and keep what's downloaded.</p>
+          <div class="stage refresh">
+            <div class="mono url" id="r-url">Link expired: the server says 403</div>
+            <div class="refresh-bar"><span id="r-bar"></span></div>
+            <div class="mono small dim2" id="r-note">1.42 GB of 2.69 GB kept</div>
+          </div>
+        </article>
+
+        <article class="tile w3">
+          <h3>Updates itself, and checks first</h3>
+          <p>Every few hours Shard looks for a new version, downloads it quietly and checks its signature before offering to restart. Nothing changes until you say so.</p>
+          <div class="stage update">
+            <div class="chain" id="u-chain"><span><i></i>Check</span><span><i></i>Signature</span><span><i></i>Download</span><span><i></i>Checksum</span><span><i></i>Ready</span></div>
+            <div class="update-bar"><span id="u-bar"></span></div>
+            <div class="update-line"><span class="mono" id="u-text">Reading the signed list of releases</span><span class="restart" id="u-ready" hidden>Restart to update</span></div>
+          </div>
+        </article>
+        <article class="tile w3 small-things">
+          <h3>And the small things</h3>
+          <ul>
+            <li><b>A speed limit</b> shared by every download</li>
+            <li><b>Stays awake</b> while anything downloads</li>
+            <li><b>Offers copied links</b> to files</li>
+            <li><b>Sorts files</b> into Video, Music and more</li>
+            <li><b>Tells you</b> when a download finishes</li>
+            <li><b>Up to 32 connections</b> per file</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="download" class="wrap section">
+      <h2 class="disp">Get Shard</h2>
+      <p class="intro" id="release-line">The latest release, straight from GitHub. Free, and there's nothing to sign up for.</p>
+      <div class="plats">
+        <div class="plat" data-os="mac">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></svg>
+          <h3>macOS</h3><p>Apple silicon and Intel, macOS 11 or later.</p>
+          <div class="files" data-files="macos-universal.dmg"></div>
+          <span class="mono yours">Your computer</span>
+        </div>
+        <div class="plat" data-os="windows">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
+          <h3>Windows</h3><p>64-bit Windows 10 or later. Unzip and run Shard.exe.</p>
+          <div class="files" data-files="windows-x64.zip"></div>
+          <span class="mono yours">Your computer</span>
+        </div>
+        <div class="plat" data-os="linux">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m7 10 3 2.5L7 15"/><path d="M12.5 15H17"/></svg>
+          <h3>Linux</h3><p>x64 and arm64, glibc 2.35 or later.</p>
+          <div class="files" data-files="amd64.deb arm64.deb linux-x64.tar.gz linux-arm64.tar.gz"></div>
+          <span class="mono yours">Your computer</span>
+        </div>
+        <div class="plat" data-os="extension">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4a2 2 0 1 1 4 0v2h3v5h-2a2 2 0 1 0 0 4h2v5h-5v-2a2 2 0 1 0-4 0v2H7v-5H5a2 2 0 1 1 0-4h2V6h7z"/></svg>
+          <h3>Browser extension</h3><p>Chrome, Edge, Brave and Arc. Optional: Shard works without it.</p>
+          <div class="files" data-files="extension"></div>
+        </div>
+      </div>
+      <p class="checksums" id="checksums"></p>
+      <div class="install">
+        <div>
+          <h3>Opening it the first time</h3>
+          <p><b>macOS:</b> Shard isn't signed by Apple yet. Open System Settings, then Privacy and Security, and choose Open Anyway.</p>
+          <p><b>Windows:</b> if SmartScreen holds it back, choose More info, then Run anyway.</p>
+          <p><b>Linux:</b> install the .deb with <code>sudo apt install ./shard_*.deb</code>, or unpack the tarball anywhere and run <code>./shard</code>.</p>
+        </div>
+        <div>
+          <h3>Adding the extension</h3>
+          <p>Unzip it somewhere it can stay, open <code>chrome://extensions</code> (or <code>arc://extensions</code>) and turn on Developer mode.</p>
+          <p>Choose Load unpacked and pick the folder.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="wrap section">
+      <h2 class="disp">Questions</h2>
+      <div class="faq">
+        <div>
+          <details><summary>Is it free?</summary><p>Yes. The code is on GitHub, and there's nothing to buy or sign up for.</p></details>
+          <details><summary>Will it make every download faster?</summary><p>Only when one connection isn't using your whole line, which is common: many servers and routes limit each connection. If one connection already fills it, you still get resuming, the queue and the rest.</p></details>
+          <details><summary>Does it send anything about me anywhere?</summary><p>No. Shard talks to the servers you download from, and to GitHub to check for updates. There's no account, no tracking and no analytics.</p></details>
+          <details><summary>Where do files go?</summary><p>Your Downloads folder, unless you choose another, ask to be asked each time, or sort files into folders by kind.</p></details>
+        </div>
+        <div>
+          <details><summary>A link stopped working halfway. Do I start again?</summary><p>No. Right-click the download, choose Refresh link and paste a fresh link to the same file. If it's the same size, Shard keeps everything it already has.</p></details>
+          <details><summary>How does combining networks work?</summary><p>Each connection is tied to one of your networks, taking them in turn, so a download's parts come in over all of them. You need two working connections, such as Wi-Fi and Ethernet, or Wi-Fi and a phone over USB.</p></details>
+          <details><summary>How does it update?</summary><p>It checks for a new version every six hours, downloads it quietly, checks its signature and asks you to restart. Nothing changes until you choose to.</p></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap last">
+      <h2 class="disp">Your next download, in shards.</h2>
+      <div class="ctas">
+        <a class="cta" id="get2" href="https://github.com/manyeya/shard/releases/latest">Download Shard</a>
+        <a class="ghost" href="https://github.com/manyeya/shard">See the code</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-row">
+      <span>A download manager for macOS, Windows and Linux.</span>
+      <nav aria-label="Elsewhere">
+        <a href="https://github.com/manyeya/shard">Source</a>
+        <a href="https://github.com/manyeya/shard/releases">Releases</a>
+        <a href="https://github.com/manyeya/shard/issues">Report a problem</a>
+      </nav>
+    </div>
+    <div class="disp wordmark" aria-hidden="true">
+      <span>Shard</span><span>Shard</span><span>Shard</span>
+    </div>
+  </footer>
+</div>
+<script src="main.js"></script>
+</body>
+</html>
