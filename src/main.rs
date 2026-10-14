@@ -5,6 +5,7 @@ mod browser;
 mod db;
 mod engine;
 mod logo;
+mod networks;
 mod queue;
 mod system;
 mod tray;

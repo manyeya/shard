@@ -118,25 +118,74 @@ impl Fail {
     }
 }
 
-/// What every download shares: the HTTP client and the speed limit.
+/// What every download shares: the HTTP client, the speed limit, and the networks to spread
+/// connections over.
 pub struct Net {
     pub client: Client,
     pub limit: Limiter,
+    /// With two or more, each new connection goes out over the next one in turn; with none,
+    /// everything takes the system's default route.
+    routes: Mutex<Vec<Arc<Route>>>,
+}
+
+/// One network a download can use, with a client whose connections leave through it.
+pub struct Route {
+    pub network: crate::networks::Network,
+    client: Client,
+    /// Bytes downloaded over it, for its share of the speed.
+    pub bytes: AtomicU64,
+}
+
+/// HTTP/1.1 only: over HTTP/2 the connections would all be streams on one TCP connection, which
+/// is the throttle parallel parts exist to get around. The read timeout turns a stalled connection
+/// into a retry.
+fn client_builder() -> reqwest::ClientBuilder {
+    Client::builder()
+        .http1_only()
+        .user_agent(concat!("shard/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
+}
+
+/// A client whose connections leave through `network`: bound to the interface on macOS and Linux,
+/// to its address on Windows (where reqwest can't name an interface).
+fn bound(network: &crate::networks::Network) -> reqwest::Result<Client> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let builder = client_builder().interface(&network.name);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let builder = client_builder().local_address(network.ip);
+    builder.build()
 }
 
 impl Net {
-    /// HTTP/1.1 only: over HTTP/2 the connections would all be streams on one TCP connection,
-    /// which is the throttle parallel parts exist to get around. The read timeout turns a stalled
-    /// connection into a retry.
     pub fn new() -> Arc<Net> {
-        let client = Client::builder()
-            .http1_only()
-            .user_agent(concat!("shard/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(30))
-            .build()
-            .expect("the TLS backend loads");
-        Arc::new(Net { client, limit: Limiter::default() })
+        let client = client_builder().build().expect("the TLS backend loads");
+        Arc::new(Net { client, limit: Limiter::default(), routes: Mutex::new(Vec::new()) })
+    }
+
+    /// Spread new connections over these networks (fewer than two: just the default route).
+    /// Networks already in use keep their counters.
+    pub fn set_routes(&self, networks: Vec<crate::networks::Network>) {
+        let mut routes = self.routes.lock().unwrap();
+        if networks.len() < 2 {
+            routes.clear();
+            return;
+        }
+        let old = std::mem::take(&mut *routes);
+        *routes = networks
+            .into_iter()
+            .filter_map(|network| match old.iter().find(|r| r.network == network) {
+                Some(kept) => Some(kept.clone()),
+                None => Some(Arc::new(Route { client: bound(&network).ok()?, network, bytes: AtomicU64::new(0) })),
+            })
+            .collect();
+        if routes.len() < 2 {
+            routes.clear();
+        }
+    }
+
+    pub fn routes(&self) -> Vec<Arc<Route>> {
+        self.routes.lock().unwrap().clone()
     }
 }
 
@@ -292,11 +341,12 @@ pub async fn fetch(
         plan: Mutex::new(plan),
         active: AtomicUsize::new(n),
         refused_at: Mutex::new(None),
+        routes: net.routes(),
     });
     let (tx, mut rx) = mpsc::channel(64);
     let mut workers = JoinSet::new(); // dropped on return, which aborts any still running
-    for _ in 0..n {
-        workers.spawn(worker(ctx.clone(), tx.clone()));
+    for k in 0..n {
+        workers.spawn(worker(ctx.clone(), tx.clone(), k));
     }
     // Weak, so the channel still closes when every worker is done; regrowing upgrades it.
     let spare = tx.downgrade();
@@ -337,7 +387,7 @@ pub async fn fetch(
                 if quiet && ctx.active.load(Relaxed) < n && ctx.plan.lock().unwrap().splittable()
                     && let Some(tx) = spare.upgrade() {
                         ctx.active.fetch_add(1, Relaxed);
-                        workers.spawn(worker(ctx.clone(), tx));
+                        workers.spawn(worker(ctx.clone(), tx, ctx.active.load(Relaxed)));
                         regrown_at = Some(Instant::now());
                     }
             }
@@ -477,6 +527,8 @@ struct Ctx {
     active: AtomicUsize,
     /// When the server last refused a connection (429/503).
     refused_at: Mutex<Option<Instant>>,
+    /// The networks connections take in turn; empty for the default route.
+    routes: Vec<Arc<Route>>,
 }
 
 type Chunks = mpsc::Sender<(usize, u64, Bytes)>;
@@ -501,9 +553,14 @@ impl Ctx {
     }
 
     /// One ranged request for part `i`, streamed to the writer until the part ends or the server stops.
-    async fn stream(&self, i: usize, tx: &Chunks) -> std::result::Result<(), Fail> {
+    /// One ranged request for part `i` over network `route` (counted modulo the routes; the
+    /// default client when there are none), streamed to the writer until the part ends or the
+    /// server stops.
+    async fn stream(&self, i: usize, route: usize, tx: &Chunks) -> std::result::Result<(), Fail> {
         let ((from, end), validator) = (self.position(i), self.plan.lock().unwrap().validator.clone());
-        let mut req = get(&self.net.client, &self.src).header(RANGE, format!("bytes={from}-{}", end - 1));
+        let via = (!self.routes.is_empty()).then(|| &self.routes[route % self.routes.len()]);
+        let client = via.map_or(&self.net.client, |r| &r.client);
+        let mut req = get(client, &self.src).header(RANGE, format!("bytes={from}-{}", end - 1));
         if !validator.is_empty() {
             req = req.header(IF_RANGE, validator);
         }
@@ -525,6 +582,9 @@ impl Ctx {
                 (off, take, p.sent == p.end)
             };
             if take > 0 {
+                if let Some(route) = via {
+                    route.bytes.fetch_add(take, Relaxed);
+                }
                 self.net.limit.take(take).await;
                 tx.send((i, off, chunk.slice(..take as usize))).await.map_err(|_| Fail::Fatal("stopped".into()))?;
             }
@@ -536,7 +596,7 @@ impl Ctx {
     }
 }
 
-async fn worker(ctx: Arc<Ctx>, tx: Chunks) -> Result<()> {
+async fn worker(ctx: Arc<Ctx>, tx: Chunks, mut route: usize) -> Result<()> {
     let (mut failures, mut current) = (0, None);
     loop {
         let i = match current {
@@ -551,7 +611,7 @@ async fn worker(ctx: Arc<Ctx>, tx: Chunks) -> Result<()> {
         };
         current = Some(i);
         let before = ctx.position(i).0;
-        let fail = ctx.stream(i, &tx).await.err();
+        let fail = ctx.stream(i, route, &tx).await.err();
         let (sent, end) = ctx.position(i);
         if sent == end {
             ctx.release(i);
@@ -573,6 +633,10 @@ async fn worker(ctx: Arc<Ctx>, tx: Chunks) -> Result<()> {
             failures = 0;
         }
         failures += 1;
+        // A network that dropped shouldn't sink the download: try the next one.
+        if matches!(fail, Some(Fail::Retry(_))) && ctx.routes.len() > 1 {
+            route += 1;
+        }
         let wait = fail.as_ref().map_or(Duration::from_millis(500 << failures), |f| f.wait(failures));
         if failures > RETRIES {
             return Err(fail.map_or_else(|| "the server kept closing the connection early".into(), Fail::into_error));
@@ -831,6 +895,33 @@ pub(crate) mod tests {
         assert!(log.refused.load(SeqCst) > 0, "the server never refused, so nothing was tested");
         assert!(log.peak.load(SeqCst) > 2, "connections never grew back past the old limit: peak {}", log.peak.load(SeqCst));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connections_spread_over_the_networks() {
+        // Two "networks" that both reach the test server: loopback, named twice.
+        let lo = |name: &str| crate::networks::Network {
+            name: if cfg!(target_os = "macos") { "lo0".into() } else { "lo".into() },
+            label: name.into(),
+            ip: std::net::Ipv4Addr::LOCALHOST.into(),
+        };
+        let net = Net::new();
+        net.set_routes(vec![lo("one"), lo("two")]);
+        // The same interface twice is still two routes: networks are told apart by label too.
+        assert_eq!(net.routes().len(), 2);
+        let body = body();
+        let (url, _log) = serve(body.clone(), 100);
+        let dir = scratch("routes");
+        let out = dir.join("file.bin");
+        let src = Source { url, ..Default::default() };
+        let (_stop, rx) = watch::channel(false);
+        let outcome = fetch(&net, &src, probe(&net, &src).await.unwrap(), &out, 4, &Progress::default(), rx).await;
+        assert_eq!(outcome.unwrap(), Outcome::Done);
+        assert_eq!(std::fs::read(&out).unwrap(), *body);
+        let bytes: Vec<u64> = net.routes().iter().map(|r| r.bytes.load(SeqCst)).collect();
+        assert!(bytes.iter().all(|b| *b > 0), "both networks carried some of it: {bytes:?}");
+        assert_eq!(bytes.iter().sum::<u64>(), body.len() as u64);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test(start_paused = true)]

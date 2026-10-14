@@ -24,7 +24,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::queue::{Id, Manager, Move, Row, Segment, Settings, Status, WhenDone};
+use crate::queue::{Id, Manager, Move, NetworkUse, Row, Segment, Settings, Status, WhenDone};
 
 actions!(
     shard,
@@ -628,6 +628,8 @@ struct IdmView {
     prefilled: Option<String>,
     limits_open: bool,
     folder: Entity<InputState>,
+    /// The computer's networks and their speeds, for combining.
+    networks: Vec<NetworkUse>,
     search: Entity<InputState>,
     /// What's typed in `search`, read when it changes.
     search_query: String,
@@ -730,6 +732,7 @@ impl IdmView {
             prefilled: None,
             limits_open: false,
             folder,
+            networks: Vec::new(),
             search,
             search_query: String::new(),
             sort: Sort::Newest,
@@ -773,6 +776,7 @@ impl IdmView {
             self.throughput_at = Instant::now();
         }
         self.settings = self.manager.settings();
+        self.networks = self.manager.networks();
         // The tray's panel asked for a download to be shown.
         if let Some(id) = cx.try_global::<Shell>().and_then(|shell| shell.select) {
             cx.global_mut::<Shell>().select = None;
@@ -1508,7 +1512,8 @@ impl IdmView {
             .child(caps(
                 format!("{active} ACTIVE · {queued} QUEUED · {conns} CONNECTIONS"),
                 ink::muted(),
-            ));
+            ))
+            .children(self.render_network_share());
 
         let gauge = (cap > 0).then(|| {
             let frac = (speed / cap as f32).min(1.);
@@ -3189,6 +3194,7 @@ impl IdmView {
                         self.settings.auto_update,
                         |s, on| s.auto_update = on,
                     ))
+                    .child(self.render_networks(cx))
                     .child(self.render_schedule(cx))
                     .child(
                         v_flex()
@@ -3250,6 +3256,92 @@ impl IdmView {
                     )
                     .child(caps("CHANGES APPLY RIGHT AWAY", ink::faint())),
             )
+    }
+
+    /// While combining networks carries a download: each one's share of the speed, as a split bar.
+    fn render_network_share(&self) -> Option<impl IntoElement + use<>> {
+        let busy: Vec<&NetworkUse> = self.networks.iter().filter(|n| n.on && n.speed > 0).collect();
+        let total: u64 = busy.iter().map(|n| n.speed).sum();
+        if !self.settings.combine_networks || busy.len() < 2 || total == 0 {
+            return None;
+        }
+        let colours = [ink::accent(), ink::white2(), ink::accent2(), ink::muted()];
+        let share = |n: &NetworkUse| n.speed as f32 / total as f32;
+        Some(
+            v_flex()
+                .w(px(260.))
+                .gap(px(5.))
+                .child(
+                    h_flex().h(px(5.)).w_full().gap(px(2.)).children(busy.iter().enumerate().map(|(i, n)| {
+                        div().h_full().rounded(px(2.)).bg(colours[i % colours.len()]).w(relative(share(n)))
+                    })),
+                )
+                .child(h_flex().gap(px(10.)).children(busy.iter().enumerate().map(|(i, n)| {
+                    h_flex()
+                        .gap(px(5.))
+                        .child(dot(colours[i % colours.len()], 6.))
+                        .child(caps(format!("{} {:.0}%", n.network.label.to_uppercase(), share(n) * 100.), ink::faint()))
+                }))),
+        )
+    }
+
+    /// Combining networks in the Limits panel: the switch, then each network with its speed.
+    fn render_networks(&self, cx: &Context<Self>) -> impl IntoElement {
+        let on = self.settings.combine_networks;
+        v_flex()
+            .p(px(12.))
+            .gap(px(8.))
+            .rounded(px(10.))
+            .bg(ink::inset())
+            .child(
+                h_flex()
+                    .gap(px(12.))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap(px(2.))
+                            .child(div().text_size(px(13.)).child("Combine networks"))
+                            .child(caps("WI-FI, ETHERNET, A PHONE… AT ONCE", ink::faint())),
+                    )
+                    .child(switch("combine-networks", on).on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_settings(|s| s.combine_networks = !on, cx);
+                    }))),
+            )
+            .when(on, |this| {
+                this.children(self.networks.iter().enumerate().map(|(i, n)| {
+                    let (name, used) = (n.network.name.clone(), n.on);
+                    h_flex()
+                        .gap(px(10.))
+                        .pt(px(6.))
+                        .border_t_1()
+                        .border_color(ink::line())
+                        .child(dot(if used { ink::accent() } else { ink::faint() }, 6.))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().text_size(px(12.5)).child(n.network.label.clone()))
+                                .child(caps(format!("{} · {}", n.network.name, n.network.ip), ink::faint())),
+                        )
+                        .child(caps(if n.speed > 0 { format_speed(n.speed) } else { "—".into() }, ink::muted()))
+                        .child(switch(("network", i), used).on_click(cx.listener(move |this, _, _, cx| {
+                            let name = name.clone();
+                            this.set_settings(
+                                move |s| {
+                                    if used {
+                                        s.networks_off.push(name);
+                                    } else {
+                                        s.networks_off.retain(|n| *n != name);
+                                    }
+                                },
+                                cx,
+                            );
+                        })))
+                }))
+                .when(self.networks.len() < 2, |this| {
+                    this.child(caps("CONNECT A SECOND NETWORK TO COMBINE", ink::faint()))
+                })
+            })
     }
 
     /// The scheduler's part of the Limits panel: when to start, when to stop, what to do after.
@@ -4171,6 +4263,20 @@ fn render_empty_state() -> impl IntoElement {
             "OR SEND DOWNLOADS FROM YOUR BROWSER WITH THE SHARD EXTENSION",
             ink::faint(),
         ))
+}
+
+/// An on/off switch, as the Limits panel draws them.
+fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .w(px(34.))
+        .h(px(20.))
+        .p(px(2.))
+        .rounded_full()
+        .cursor_pointer()
+        .bg(if on { ink::accent() } else { ink::line_strong() })
+        .child(div().size(px(16.)).rounded_full().bg(ink::text()).when(on, |knob| knob.ml(px(14.))))
 }
 
 /// "Shutting down in 42 s · Cancel", across the top while the countdown runs.

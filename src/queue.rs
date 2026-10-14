@@ -117,6 +117,20 @@ pub struct Settings {
     pub when_done: WhenDone,
     /// Check for, and download, new versions of Shard.
     pub auto_update: bool,
+    /// Download over every network at once (Wi-Fi, Ethernet, a phone…), each connection taking
+    /// the next one in turn.
+    pub combine_networks: bool,
+    /// Networks (interface names) left out of combining.
+    pub networks_off: Vec<String>,
+}
+
+/// A network the computer has, whether combining uses it, and its share of the speed.
+#[derive(Clone, Debug)]
+pub struct NetworkUse {
+    pub network: crate::networks::Network,
+    pub on: bool,
+    /// Bytes per second over it, while combining.
+    pub speed: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -200,6 +214,11 @@ struct Inner {
     awake_on: bool,
     /// The local (hour, minute) the scheduler last looked at, so it acts once per minute.
     clock: Option<(u8, u8)>,
+    /// The networks at the last scan, and when that was.
+    networks: Vec<crate::networks::Network>,
+    scanned: Option<std::time::Instant>,
+    /// Per network (interface name): bytes at the last tick, and speed.
+    network_speed: HashMap<String, (u64, u64)>,
 }
 
 /// Seconds of speed history kept.
@@ -303,6 +322,8 @@ impl Manager {
             stop_at: db.setting("stop_at").and_then(|v| parse_clock(&v)),
             when_done: db.setting("when_done").map_or(WhenDone::Nothing, |v| WhenDone::parse(&v)),
             auto_update: db.setting("auto_update").is_none_or(|v| v == "true"),
+            combine_networks: db.setting("combine_networks").is_some_and(|v| v == "true"),
+            networks_off: db.setting("networks_off").map_or_else(Vec::new, |v| v.split(',').filter(|n| !n.is_empty()).map(String::from).collect()),
         };
         let net = Net::new();
         net.limit.set(settings.speed_limit);
@@ -325,8 +346,19 @@ impl Manager {
             awake: crate::system::Awake::new(),
             shows: Default::default(),
             drained: Default::default(),
-            inner: Mutex::new(Inner { db, settings, items, throughput: VecDeque::new(), awake_on: false, clock: None }),
+            inner: Mutex::new(Inner {
+                db,
+                settings,
+                items,
+                throughput: VecDeque::new(),
+                awake_on: false,
+                clock: None,
+                networks: Vec::new(),
+                scanned: None,
+                network_speed: HashMap::new(),
+            }),
         });
+        m.use_networks(&mut m.lock());
         m.schedule(&mut m.lock());
         let me = Arc::downgrade(&m);
         m.rt.spawn(async move {
@@ -547,6 +579,20 @@ impl Manager {
         self.schedule(&mut inner);
     }
 
+    /// Every network the computer has, whether combining uses it, and its speed.
+    pub fn networks(&self) -> Vec<NetworkUse> {
+        let inner = self.lock();
+        inner
+            .networks
+            .iter()
+            .map(|n| NetworkUse {
+                network: n.clone(),
+                on: !inner.settings.networks_off.contains(&n.name),
+                speed: inner.network_speed.get(&n.name).map_or(0, |s| s.1),
+            })
+            .collect()
+    }
+
     /// Goes up by one each time the queue finishes: its last download done and nothing waiting.
     pub fn drained(&self) -> u64 {
         self.drained.load(Relaxed)
@@ -584,11 +630,15 @@ impl Manager {
             ("stop_at", format_clock(s.stop_at)),
             ("when_done", s.when_done.as_str().to_string()),
             ("auto_update", s.auto_update.to_string()),
+            ("combine_networks", s.combine_networks.to_string()),
+            ("networks_off", s.networks_off.join(",")),
         ] {
             inner.db.set_setting(k, &v).map_err(|e| e.to_string())?;
         }
         self.net.limit.set(s.speed_limit);
         inner.settings = s;
+        inner.scanned = None; // combining may have changed: look again
+        self.use_networks(&mut inner);
         self.schedule(&mut inner);
         self.stay_awake(&mut inner);
         Ok(())
@@ -716,6 +766,12 @@ impl Manager {
             it.save(db);
         }
         push(throughput, total);
+        for route in self.net.routes() {
+            let bytes = route.bytes.load(Relaxed);
+            let entry = inner.network_speed.entry(route.network.name.clone()).or_insert((bytes, 0));
+            *entry = (bytes, (entry.1 + bytes.saturating_sub(entry.0)) / 2);
+        }
+        self.use_networks(&mut inner);
         self.stay_awake(&mut inner);
         self.keep_schedule(&mut inner, chrono::Local::now());
     }
@@ -751,6 +807,22 @@ impl Manager {
 }
 
 impl Manager {
+    /// Look at the computer's networks every 30 s (they come and go), and spread new connections
+    /// over the ones combining should use.
+    fn use_networks(&self, inner: &mut Inner) {
+        if inner.scanned.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+            return;
+        }
+        inner.scanned = Some(std::time::Instant::now());
+        inner.networks = crate::networks::list();
+        let routes = if inner.settings.combine_networks {
+            inner.networks.iter().filter(|n| !inner.settings.networks_off.contains(&n.name)).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        self.net.set_routes(routes);
+    }
+
     /// Hold the computer awake while anything downloads, if the settings say so.
     fn stay_awake(&self, inner: &mut Inner) {
         let want = inner.settings.keep_awake && inner.items.iter().any(|i| i.stop.is_some());
