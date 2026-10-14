@@ -5,6 +5,8 @@
 #   macOS signing and notarising: MACOS_CERTIFICATE (a Developer ID Application .p12, base64),
 #     MACOS_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
 #   Chrome Web Store: CWS_EXTENSION_ID, CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN
+# Required for a release: UPDATE_SIGNING_KEY, the Ed25519 private key (PEM) that signs update.txt,
+# which installed copies check before updating themselves.
 name: Release
 
 on:
@@ -89,10 +91,15 @@ jobs:
           xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple "$DMG"
+      # What installed copies update from: the app itself, zipped.
+      - name: Update archive
+        run: ditto -c -k --keepParent target/release/Shard.app "Shard-$VERSION-macos-universal.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: ${{ env.DMG }}
+          path: |
+            ${{ env.DMG }}
+            Shard-*-macos-universal.zip
 
   windows:
     needs: version
@@ -113,10 +120,14 @@ jobs:
           Copy-Item target/release/shard.exe "$name/Shard.exe"
           Copy-Item README.md $name
           Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
+          # What installed copies update from: the bare binary.
+          Copy-Item target/release/shard.exe "$name.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: Shard-*-windows-x64.zip
+          path: |
+            Shard-*-windows-x64.zip
+            Shard-*-windows-x64.exe
 
   linux:
     needs: version
@@ -150,11 +161,14 @@ jobs:
           tar czf "$name.tar.gz" "$name"
           cargo install cargo-deb --locked
           cargo deb --no-build --output "shard_${VERSION}_${{ matrix.deb }}.deb"
+          # What installed copies update from: the bare binary.
+          cp target/release/shard "$name"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
           path: |
             shard-*-linux-*.tar.gz
+            shard-*-linux-${{ matrix.arch }}
             shard_*.deb
 
   extension:
@@ -187,14 +201,35 @@ jobs:
           path: shard-extension-*.zip
 
   release:
-    needs: [macos, windows, linux, extension]
+    needs: [version, macos, windows, linux, extension]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Signed update manifest
+        working-directory: dist
+        run: |
+          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "::error::UPDATE_SIGNING_KEY isn't set; installed copies couldn't verify this release"; exit 1; }
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          entry() { printf '%s %s %s %s/%s\n' "$1" "$(wc -c < "$2" | tr -d ' ')" "$(sha256sum "$2" | cut -d' ' -f1)" "$base" "$2"; }
+          {
+            echo "shard-update 1"
+            echo "version $VERSION"
+            entry macos-universal "Shard-$VERSION-macos-universal.zip"
+            entry windows-x64 "Shard-$VERSION-windows-x64.exe"
+            entry linux-x64 "shard-$VERSION-linux-x64"
+            entry linux-arm64 "shard-$VERSION-linux-arm64"
+          } > update.txt
+          cat update.txt
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-key.pem" -in update.txt -out update.txt.sig
+          rm "$RUNNER_TEMP/update-key.pem"
       - run: cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:

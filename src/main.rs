@@ -10,6 +10,7 @@ mod queue;
 mod system;
 mod tray;
 mod ui;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
@@ -59,7 +60,19 @@ enum Window {
 
 fn app(url: Option<&str>, window: Window) {
     // One Shard per user: the browser extension's port doubles as the lock.
-    let listener = match std::net::TcpListener::bind(("127.0.0.1", browser::port())) {
+    // Just updated: the old copy is quitting, so give it a moment to let go of the port.
+    let bind = || std::net::TcpListener::bind(("127.0.0.1", browser::port()));
+    let mut bound = bind();
+    if std::env::var_os("SHARD_RESTARTED").is_some() {
+        for _ in 0..50 {
+            if bound.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            bound = bind();
+        }
+    }
+    let listener = match bound {
         Ok(l) => Some(l),
         Err(_) if browser::running() => {
             // Already running: hand the link over, or bring its window back.
@@ -109,8 +122,11 @@ fn app(url: Option<&str>, window: Window) {
         eprintln!("shard: {e}");
     }
     match window {
-        Window::Shown => ui::run(manager, false),
-        Window::Hidden => ui::run(manager, true),
+        Window::Shown | Window::Hidden => {
+            update::clean_up();
+            let updater = update::Updater::start(manager.clone(), &data, rt.handle());
+            ui::run(manager, updater, matches!(window, Window::Hidden));
+        }
         Window::None => rt.block_on(std::future::pending::<()>()),
     }
 }

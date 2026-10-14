@@ -146,7 +146,7 @@ mod ink {
 ///
 /// On macOS GPUI quits through `[NSApp terminate:]`, which ends the process without returning.
 /// With `SHARD_NO_FOCUS=1` the window opens without activating the app or taking focus.
-pub fn run(manager: Arc<Manager>, hidden: bool) {
+pub fn run(manager: Arc<Manager>, updater: Arc<crate::update::Updater>, hidden: bool) {
     let no_focus = std::env::var_os("SHARD_NO_FOCUS").is_some_and(|v| v == "1");
     let app = gpui_kit::application().with_assets(IdmAssets).with_quit_mode(QuitMode::Explicit);
     // Launched again from Finder, Spotlight or the Dock while running: show the window.
@@ -196,6 +196,7 @@ pub fn run(manager: Arc<Manager>, hidden: bool) {
                 docked: true,
                 power: None,
                 clip: None,
+                updater,
             });
             cx.set_app_identity("dev.shard.app", "Shard");
             cx.on_system_notification_response(notification_response);
@@ -630,6 +631,8 @@ struct IdmView {
     folder: Entity<InputState>,
     /// The computer's networks and their speeds, for combining.
     networks: Vec<NetworkUse>,
+    /// Where updating has got to.
+    update: crate::update::State,
     search: Entity<InputState>,
     /// What's typed in `search`, read when it changes.
     search_query: String,
@@ -733,6 +736,7 @@ impl IdmView {
             limits_open: false,
             folder,
             networks: Vec::new(),
+            update: crate::update::State::Idle,
             search,
             search_query: String::new(),
             sort: Sort::Newest,
@@ -777,6 +781,9 @@ impl IdmView {
         }
         self.settings = self.manager.settings();
         self.networks = self.manager.networks();
+        if let Some(shell) = cx.try_global::<Shell>() {
+            self.update = shell.updater.state();
+        }
         // The tray's panel asked for a download to be shown.
         if let Some(id) = cx.try_global::<Shell>().and_then(|shell| shell.select) {
             cx.global_mut::<Shell>().select = None;
@@ -1412,6 +1419,7 @@ impl IdmView {
                         h_flex()
                             .gap(px(6.))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .children(self.render_update_pill(cx))
                             .child(
                                 h_flex()
                                     .id("cap-pill")
@@ -2891,6 +2899,8 @@ impl IdmView {
             .child(div().min_w_0().truncate().child(tilde(&self.settings.dir)))
             .child(div().flex_1())
             .child(format!("{} downloads", self.rows.len()))
+            .child(div().w(px(12.)))
+            .child(format!("v{}", crate::update::VERSION))
     }
 
     fn render_limits(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -3194,6 +3204,17 @@ impl IdmView {
                         self.settings.auto_update,
                         |s, on| s.auto_update = on,
                     ))
+                    .child(
+                        h_flex()
+                            .px(px(12.))
+                            .gap(px(8.))
+                            .child(div().flex_1().min_w_0().truncate().child(caps(self.update_line(), ink::faint())))
+                            .child(ghost_button("check-updates", "Check now").on_click(cx.listener(|_, _, _, cx| {
+                                if let Some(shell) = cx.try_global::<Shell>() {
+                                    shell.updater.check_now();
+                                }
+                            }))),
+                    )
                     .child(self.render_networks(cx))
                     .child(self.render_schedule(cx))
                     .child(
@@ -3256,6 +3277,56 @@ impl IdmView {
                     )
                     .child(caps("CHANGES APPLY RIGHT AWAY", ink::faint())),
             )
+    }
+
+    /// "Restart to update" once an update is ready; "Updating 42%" while it comes down.
+    fn render_update_pill(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        use crate::update::State;
+        match &self.update {
+            State::Ready { version } => Some(
+                h_flex()
+                    .id("update-pill")
+                    .h(px(28.))
+                    .px(px(12.))
+                    .gap(px(6.))
+                    .rounded_full()
+                    .bg(ink::accent().opacity(0.14))
+                    .border_1()
+                    .border_color(ink::accent().opacity(0.6))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ink::accent().opacity(0.22)))
+                    .child(dot(ink::accent(), 6.))
+                    .child(caps(format!("RESTART TO UPDATE · {version}"), ink::accent2()))
+                    .on_click(cx.listener(|_, _, _, cx| restart_to_update(cx))),
+            ),
+            State::Downloading { done, total, .. } if *total > 0 => Some(
+                h_flex()
+                    .id("update-pill")
+                    .h(px(28.))
+                    .px(px(12.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(ink::line_strong())
+                    .child(caps(format!("UPDATING {:.0}%", *done as f64 * 100. / *total as f64), ink::faint())),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The update state, as one line for the Limits panel.
+    fn update_line(&self) -> String {
+        use crate::update::State;
+        let v = crate::update::VERSION;
+        match &self.update {
+            State::Idle => format!("V{v} · UP TO DATE"),
+            State::Checking => format!("V{v} · CHECKING…"),
+            State::Downloading { version, done, total } => {
+                format!("DOWNLOADING {version} · {}%", if *total > 0 { done * 100 / total } else { 0 })
+            }
+            State::Ready { version } => format!("{version} READY · RESTART TO INSTALL"),
+            State::Failed(e) => format!("COULDN'T CHECK: {}", e.to_uppercase()),
+            State::Manual(why) => why.to_uppercase(),
+        }
     }
 
     /// While combining networks carries a download: each one's share of the speed, as a split bar.
@@ -5413,6 +5484,7 @@ struct Shell {
     power: Option<(WhenDone, Instant)>,
     /// The copied link the last notification offered to download.
     clip: Option<String>,
+    updater: Arc<crate::update::Updater>,
 }
 
 impl Global for Shell {}
@@ -5535,7 +5607,10 @@ fn tray_status(rows: &[Row], settings: &Settings, cx: &App) -> crate::tray::Stat
         keep_awake: settings.keep_awake,
         launch_at_login: settings.launch_at_login,
         alert: power_alert(cx),
-        update: None,
+        update: match cx.global::<Shell>().updater.state() {
+            crate::update::State::Ready { version } => Some(format!("Restart to update to {version}")),
+            _ => None,
+        },
     }
 }
 
@@ -5621,6 +5696,14 @@ fn keep_power(manager: &Manager, settings: &Settings, rows: &[Row], drained: &mu
     }
 }
 
+/// Install the downloaded update and quit; the new version starts itself.
+fn restart_to_update(cx: &mut App) {
+    match cx.global::<Shell>().updater.install() {
+        Ok(()) => cx.quit(),
+        Err(err) => eprintln!("shard: {err}"),
+    }
+}
+
 fn cancel_power(cx: &mut App) {
     cx.global_mut::<Shell>().power = None;
     cx.dismiss_system_notification("power");
@@ -5668,7 +5751,7 @@ fn tray_event(event: crate::tray::Event, cx: &mut App) {
         Event::KeepAwake(on) => change(&|s| s.keep_awake = on),
         Event::LaunchAtLogin(on) => change(&|s| s.launch_at_login = on),
         Event::CancelPower => cancel_power(cx),
-        Event::RestartToUpdate => {}
+        Event::RestartToUpdate => restart_to_update(cx),
         Event::Quit => cx.quit(),
     }
 }
