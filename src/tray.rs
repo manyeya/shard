@@ -23,6 +23,10 @@ pub struct Status {
     pub cap: u64,
     pub keep_awake: bool,
     pub launch_at_login: bool,
+    /// A sleep or shut down counting down ("Shutting down in 42 s"); the menu offers to cancel it.
+    pub alert: Option<String>,
+    /// A new version ready to install ("Restart to update to 0.2.0").
+    pub update: Option<String>,
 }
 
 /// What the user asked of the tray.
@@ -36,12 +40,19 @@ pub enum Event {
     Cap(u64),
     KeepAwake(bool),
     LaunchAtLogin(bool),
+    CancelPower,
+    RestartToUpdate,
     Quit,
 }
 
 pub struct Tray {
     icon: TrayIcon,
+    menu: Menu,
     summary: MenuItem,
+    /// Shown under the summary only while there's a sleep or shut down to cancel.
+    cancel: MenuItem,
+    /// Shown under the summary only while an update is ready.
+    restart: MenuItem,
     pause: MenuItem,
     resume: MenuItem,
     caps: Vec<CheckMenuItem>,
@@ -56,6 +67,8 @@ impl Tray {
     /// None when there's no tray to put an icon in (some Linux desktops).
     pub fn new() -> Option<Tray> {
         let summary = MenuItem::with_id("summary", "Shard", false, None);
+        let cancel = MenuItem::with_id("cancel-power", "Cancel", true, None);
+        let restart = MenuItem::with_id("restart-update", "Restart to update", true, None);
         let pause = MenuItem::with_id("pause", "Pause all", true, None);
         let resume = MenuItem::with_id("resume", "Resume all", true, None);
         let caps: Vec<CheckMenuItem> = CAPS
@@ -86,7 +99,7 @@ impl Tray {
             &MenuItem::with_id("quit", "Quit Shard", true, None),
         ])
         .ok()?;
-        let builder = TrayIconBuilder::new().with_id("shard").with_menu(Box::new(menu)).with_menu_on_left_click(false);
+        let builder = TrayIconBuilder::new().with_id("shard").with_menu(Box::new(menu.clone())).with_menu_on_left_click(false);
         // A template on macOS: only alpha counts, and the system colours it for the menu bar.
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon(None));
@@ -97,7 +110,7 @@ impl Tray {
             .build()
             .map_err(|e| eprintln!("shard: no tray icon: {e}"))
             .ok()?;
-        Some(Tray { icon, summary, pause, resume, caps, awake, login, shown: None, drawn: None })
+        Some(Tray { icon, menu, summary, cancel, restart, pause, resume, caps, awake, login, shown: None, drawn: None })
     }
 
     pub fn update(&mut self, status: &Status) {
@@ -127,6 +140,31 @@ impl Tray {
         }
         self.awake.set_checked(status.keep_awake);
         self.login.set_checked(status.launch_at_login);
+        // Items that come and go sit under the summary line, at 1 and 2.
+        let had = self.shown.as_ref();
+        let (had_alert, had_update) = (had.is_some_and(|s| s.alert.is_some()), had.is_some_and(|s| s.update.is_some()));
+        match (&status.alert, had_alert) {
+            (Some(text), false) => {
+                self.cancel.set_text(format!("Cancel: {text}"));
+                let _ = self.menu.insert(&self.cancel, 1);
+            }
+            (Some(text), true) => self.cancel.set_text(format!("Cancel: {text}")),
+            (None, true) => {
+                let _ = self.menu.remove(&self.cancel);
+            }
+            (None, false) => {}
+        }
+        match (&status.update, had_update) {
+            (Some(text), false) => {
+                self.restart.set_text(text);
+                let _ = self.menu.insert(&self.restart, 1);
+            }
+            (Some(text), true) => self.restart.set_text(text),
+            (None, true) => {
+                let _ = self.menu.remove(&self.restart);
+            }
+            (None, false) => {}
+        }
         self.shown = Some(status.clone());
     }
 
@@ -150,6 +188,8 @@ impl Tray {
                 "pause" => Event::PauseAll,
                 "resume" => Event::ResumeAll,
                 "awake" => Event::KeepAwake(self.awake.is_checked()),
+                "cancel-power" => Event::CancelPower,
+                "restart-update" => Event::RestartToUpdate,
                 "login" => Event::LaunchAtLogin(self.login.is_checked()),
                 "quit" => Event::Quit,
                 _ => match id.strip_prefix("cap:").and_then(|c| c.parse::<u64>().ok()) {

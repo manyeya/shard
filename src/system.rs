@@ -35,6 +35,36 @@ impl Awake {
     }
 }
 
+/// Put the computer to sleep (the queue finished, and the settings say so).
+pub fn sleep_now() {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("pmset", &["sleepnow"])
+    } else if cfg!(windows) {
+        ("rundll32.exe", &["powrprof.dll,SetSuspendState", "0,1,0"])
+    } else {
+        ("systemctl", &["suspend"])
+    };
+    run_power(program, args);
+}
+
+/// Shut the computer down (the queue finished, and the settings say so).
+pub fn shut_down() {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("osascript", &["-e", "tell application \"System Events\" to shut down"])
+    } else if cfg!(windows) {
+        ("shutdown", &["/s", "/t", "0"])
+    } else {
+        ("systemctl", &["poweroff"])
+    };
+    run_power(program, args);
+}
+
+fn run_power(program: &str, args: &[&str]) {
+    if let Err(e) = std::process::Command::new(program).args(args).status() {
+        eprintln!("shard: couldn't run {program}: {e}");
+    }
+}
+
 /// Whether Shard starts, hidden in the tray, when the user logs in.
 pub fn launch_at_login() -> bool {
     login_entry(&home(), xdg_config()).is_some_and(|p| p.exists()) || registry_entry()

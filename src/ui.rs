@@ -24,7 +24,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::queue::{Id, Manager, Row, Segment, Settings, Status};
+use crate::queue::{Id, Manager, Move, Row, Segment, Settings, Status, WhenDone};
 
 actions!(
     shard,
@@ -187,7 +187,18 @@ pub fn run(manager: Arc<Manager>, hidden: bool) {
                 Menu::new("Shard").items([MenuItem::action("Quit Shard", Quit)]),
             ]);
 
-            cx.set_global(Shell { manager: manager.clone(), main: None, panel: None, select: None, has_tray: true, docked: true });
+            cx.set_global(Shell {
+                manager: manager.clone(),
+                main: None,
+                panel: None,
+                select: None,
+                has_tray: true,
+                docked: true,
+                power: None,
+                clip: None,
+            });
+            cx.set_app_identity("dev.shard.app", "Shard");
+            cx.on_system_notification_response(notification_response);
             if !hidden {
                 open_main(!no_focus, cx);
             }
@@ -402,6 +413,40 @@ enum RowAction {
     Restart,
     Remove,
     CopyUrl,
+    RefreshLink,
+    Move(Move),
+}
+
+/// How the queue list is ordered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sort {
+    Newest,
+    Oldest,
+    Name,
+    Size,
+    Progress,
+    /// Waiting downloads in the order they'll start.
+    Queue,
+}
+
+impl Sort {
+    const ALL: [Sort; 6] = [Sort::Newest, Sort::Oldest, Sort::Name, Sort::Size, Sort::Progress, Sort::Queue];
+
+    fn label(self) -> &'static str {
+        match self {
+            Sort::Newest => "NEWEST",
+            Sort::Oldest => "OLDEST",
+            Sort::Name => "NAME",
+            Sort::Size => "SIZE",
+            Sort::Progress => "PROGRESS",
+            Sort::Queue => "QUEUE ORDER",
+        }
+    }
+
+    fn next(self) -> Sort {
+        let at = Sort::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Sort::ALL[(at + 1) % Sort::ALL.len()]
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -553,6 +598,14 @@ struct RemoveModal {
     delete_file: bool,
 }
 
+/// Giving a download a fresh link, its old one having expired.
+struct RefreshModal {
+    id: Id,
+    name: SharedString,
+    input: Entity<InputState>,
+    error: Option<SharedString>,
+}
+
 // ---------------------------------------------------------------------------------------------
 // The view
 
@@ -575,8 +628,16 @@ struct IdmView {
     prefilled: Option<String>,
     limits_open: bool,
     folder: Entity<InputState>,
+    search: Entity<InputState>,
+    /// What's typed in `search`, read when it changes.
+    search_query: String,
+    sort: Sort,
+    start_at: Entity<InputState>,
+    stop_at: Entity<InputState>,
+    refresh: Option<RefreshModal>,
     limits_error: Option<SharedString>,
     remove: Option<RemoveModal>,
+
     copied_at: Option<Instant>,
     graph: GraphAnim,
     /// Connections in use, summed over downloads, once per poll.
@@ -599,7 +660,23 @@ impl IdmView {
         let command =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a link to download…"));
         let folder = cx.new(|cx| InputState::new(window, cx));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let start_at = cx.new(|cx| InputState::new(window, cx).placeholder("--:--"));
+        let stop_at = cx.new(|cx| InputState::new(window, cx).placeholder("--:--"));
+        let schedule = |this: &mut Self, _: &Entity<InputState>, event: &InputEvent, _: &mut Window, cx: &mut Context<Self>| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.apply_schedule(cx);
+            }
+        };
         let subscriptions = vec![
+            cx.subscribe_in(&search, window, |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.search_query = input.read(cx).value().trim().to_string();
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&start_at, window, schedule),
+            cx.subscribe_in(&stop_at, window, schedule),
             cx.subscribe_in(
                 &command,
                 window,
@@ -653,6 +730,12 @@ impl IdmView {
             prefilled: None,
             limits_open: false,
             folder,
+            search,
+            search_query: String::new(),
+            sort: Sort::Newest,
+            start_at,
+            stop_at,
+            refresh: None,
             limits_error: None,
             remove: None,
             copied_at: None,
@@ -722,12 +805,26 @@ impl IdmView {
     }
 
     fn visible(&self) -> Vec<&Row> {
-        self.rows
+        let query = self.search_query.to_lowercase();
+        let mut rows: Vec<&Row> = self
+            .rows
             .iter()
             .filter(|r| {
-                self.status_filter.matches(r) && self.category.is_none_or(|c| Category::of(r) == c)
+                self.status_filter.matches(r)
+                    && self.category.is_none_or(|c| Category::of(r) == c)
+                    && (query.is_empty() || r.name.to_lowercase().contains(&query) || r.url.to_lowercase().contains(&query))
             })
-            .collect()
+            .collect();
+        match self.sort {
+            Sort::Newest => {} // the manager's order
+            Sort::Oldest => rows.reverse(),
+            Sort::Name => rows.sort_by_key(|r| r.name.to_lowercase()),
+            Sort::Size => rows.sort_by_key(|r| std::cmp::Reverse(r.total)),
+            Sort::Progress => rows.sort_by(|a, b| fraction(b).total_cmp(&fraction(a))),
+            // Waiting ones in start order first, then the rest as they were.
+            Sort::Queue => rows.sort_by_key(|r| if r.position == 0 { usize::MAX } else { r.position }),
+        }
+        rows
     }
 
     fn row(&self, id: Id) -> Option<&Row> {
@@ -857,6 +954,50 @@ impl IdmView {
                 self.copied_at = Some(Instant::now());
                 cx.notify();
             }
+            RowAction::RefreshLink => {
+                // A fresh link on the clipboard is the likely one; otherwise start empty.
+                let start = clipboard_link(cx).filter(|url| *url != row.url).unwrap_or_default();
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste the new link…"));
+                input.update(cx, |input, cx| {
+                    input.set_value(start, window, cx);
+                    input.focus(window, cx);
+                });
+                self.refresh = Some(RefreshModal { id, name: display_name(&row).into(), input, error: None });
+                cx.notify();
+            }
+            RowAction::Move(to) => {
+                self.manager.move_to(id, to);
+                self.refresh(cx);
+            }
+        }
+    }
+
+    fn confirm_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(modal) = &mut self.refresh else { return };
+        let url = modal.input.read(cx).value().trim().to_string();
+        match self.manager.refresh_link(modal.id, &url) {
+            Ok(()) => {
+                self.refresh = None;
+                self.list_focus.focus(window, cx);
+                self.refresh(cx);
+            }
+            Err(err) => modal.error = Some(err.into()),
+        }
+        cx.notify();
+    }
+
+    /// The schedule's two times, as typed: empty turns one off.
+    fn apply_schedule(&mut self, cx: &mut Context<Self>) {
+        let (start, stop) = (self.start_at.read(cx).value().to_string(), self.stop_at.read(cx).value().to_string());
+        let (start_at, stop_at) = (crate::queue::parse_clock(&start), crate::queue::parse_clock(&stop));
+        let bad = |text: &str, parsed: Option<(u8, u8)>| !text.trim().is_empty() && parsed.is_none();
+        if bad(&start, start_at) || bad(&stop, stop_at) {
+            self.limits_error = Some("Times are 24-hour HH:MM, like 01:30.".into());
+            cx.notify();
+            return;
+        }
+        if (start_at, stop_at) != (self.settings.start_at, self.settings.stop_at) {
+            self.set_settings(|s| (s.start_at, s.stop_at) = (start_at, stop_at), cx);
         }
     }
 
@@ -867,7 +1008,36 @@ impl IdmView {
     }
 
     fn add(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match self.manager.add(url) {
+        if self.settings.ask_where {
+            self.add_asking_where(url.to_string(), window, cx);
+            return true;
+        }
+        let added = self.manager.add(url);
+        self.added(added, window, cx)
+    }
+
+    /// Ask for a folder, then add the link there.
+    fn add_asking_where(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Save here".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(dir) = paths.into_iter().next() else { return };
+            this.update_in(cx, |this, window, cx| {
+                let added = this.manager.add_to(&url, dir);
+                this.added(added, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn added(&mut self, added: Result<Id, String>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match added {
             Ok(id) => {
                 self.command_error = None;
                 self.refresh(cx);
@@ -1008,6 +1178,9 @@ impl IdmView {
             let dir = tilde(&self.settings.dir);
             self.folder
                 .update(cx, |input, cx| input.set_value(dir, window, cx));
+            let (start, stop) = (crate::queue::format_clock(self.settings.start_at), crate::queue::format_clock(self.settings.stop_at));
+            self.start_at.update(cx, |input, cx| input.set_value(start, window, cx));
+            self.stop_at.update(cx, |input, cx| input.set_value(stop, window, cx));
             self.panel_focus.focus(window, cx);
         } else {
             self.list_focus.focus(window, cx);
@@ -1028,7 +1201,7 @@ impl IdmView {
     }
 
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remove.take().is_none() {
+        if self.remove.take().is_none() && self.refresh.take().is_none() {
             self.limits_open = false;
         }
         self.list_focus.focus(window, cx);
@@ -1152,9 +1325,15 @@ impl Render for IdmView {
             .when_some(self.command_error.clone(), |this, err| {
                 this.child(render_command_error(err, cx))
             })
+            .when_some(power_alert(cx), |this, alert| {
+                this.child(render_power_banner(alert, cx))
+            })
             .when(self.limits_open, |this| this.child(self.render_limits(cx)))
             .when(self.remove.is_some(), |this| {
                 this.child(self.render_remove(cx))
+            })
+            .when(self.refresh.is_some(), |this| {
+                this.child(self.render_refresh(cx))
             })
     }
 }
@@ -1796,11 +1975,41 @@ impl IdmView {
                     .flex_shrink_0()
                     .h(px(40.))
                     .px(px(16.))
+                    .gap(px(10.))
                     .child(
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::MEDIUM)
                             .child("Queue"),
+                    )
+                    .child(
+                        h_flex()
+                            .w(px(190.))
+                            .h(px(26.))
+                            .px(px(8.))
+                            .gap(px(6.))
+                            .rounded(px(7.))
+                            .bg(ink::inset())
+                            .border_1()
+                            .border_color(ink::line())
+                            .child(Icon::new(Lucide::Link).with_size(px(11.)).text_color(ink::faint()))
+                            .child(Input::new(&self.search).appearance(false).text_size(px(12.)).h(px(22.)).px_0()),
+                    )
+                    .child(
+                        h_flex()
+                            .id("sort")
+                            .h(px(26.))
+                            .px(px(8.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(ink::line())
+                            .cursor_pointer()
+                            .hover(|s| s.bg(ink::inset()))
+                            .child(caps(format!("SORT · {}", self.sort.label()), ink::muted()))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sort = this.sort.next();
+                                cx.notify();
+                            })),
                     )
                     .child(div().flex_1())
                     .child(caps(
@@ -2795,7 +3004,8 @@ impl IdmView {
                         spread_radius: px(0.),
                         inset: false,
                     }])
-                    .overflow_hidden()
+                    .max_h(relative(0.88))
+                    .overflow_y_scroll()
                     .occlude()
                     .key_context(PANEL)
                     .track_focus(&self.panel_focus)
@@ -2956,6 +3166,30 @@ impl IdmView {
                         self.settings.launch_at_login,
                         |s, on| s.launch_at_login = on,
                     ))
+                    .child(toggle("notify", "Notify when done", "OR WHEN ONE FAILS", self.settings.notify, |s, on| s.notify = on))
+                    .child(toggle(
+                        "watch-clipboard",
+                        "Offer copied links",
+                        "WHEN A FILE LINK IS COPIED",
+                        self.settings.watch_clipboard,
+                        |s, on| s.watch_clipboard = on,
+                    ))
+                    .child(toggle("ask-where", "Ask where to save", "EACH LINK ADDED HERE", self.settings.ask_where, |s, on| s.ask_where = on))
+                    .child(toggle(
+                        "sort-into-folders",
+                        "Sort into folders",
+                        "VIDEO, MUSIC, ARCHIVES…",
+                        self.settings.sort_into_folders,
+                        |s, on| s.sort_into_folders = on,
+                    ))
+                    .child(toggle(
+                        "auto-update",
+                        "Update automatically",
+                        "DOWNLOADS, THEN ASKS TO RESTART",
+                        self.settings.auto_update,
+                        |s, on| s.auto_update = on,
+                    ))
+                    .child(self.render_schedule(cx))
                     .child(
                         v_flex()
                             .p(px(12.))
@@ -3015,6 +3249,126 @@ impl IdmView {
                             }),
                     )
                     .child(caps("CHANGES APPLY RIGHT AWAY", ink::faint())),
+            )
+    }
+
+    /// The scheduler's part of the Limits panel: when to start, when to stop, what to do after.
+    fn render_schedule(&self, cx: &Context<Self>) -> impl IntoElement {
+        let time = |label: &'static str, input: &Entity<InputState>| {
+            h_flex()
+                .flex_1()
+                .gap(px(8.))
+                .child(caps(label, ink::faint()))
+                .child(
+                    div()
+                        .w(px(64.))
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(7.))
+                        .bg(ink::panel())
+                        .border_1()
+                        .border_color(ink::line_strong())
+                        .child(Input::new(input).appearance(false).font_family(MONO).text_size(px(12.)).h(px(24.)).px_0()),
+                )
+        };
+        const AFTER: [(WhenDone, &str); 3] = [(WhenDone::Nothing, "NOTHING"), (WhenDone::Sleep, "SLEEP"), (WhenDone::ShutDown, "SHUT DOWN")];
+        v_flex()
+            .p(px(12.))
+            .gap(px(10.))
+            .rounded(px(10.))
+            .bg(ink::inset())
+            .child(
+                v_flex()
+                    .gap(px(2.))
+                    .child(div().text_size(px(13.)).child("Schedule"))
+                    .child(caps("RESUMES AND PAUSES THE QUEUE · 24-HOUR TIMES", ink::faint())),
+            )
+            .child(h_flex().gap(px(10.)).child(time("START", &self.start_at)).child(time("STOP", &self.stop_at)))
+            .child(
+                h_flex()
+                    .gap(px(6.))
+                    .child(caps("WHEN DONE", ink::faint()))
+                    .child(div().flex_1())
+                    .children(AFTER.iter().enumerate().map(|(i, &(when, label))| {
+                        chip(("when-done", i), label, None, self.settings.when_done == when, true)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_settings(|s| s.when_done = when, cx);
+                            }))
+                    })),
+            )
+    }
+
+    fn render_refresh(&self, cx: &Context<Self>) -> impl IntoElement {
+        let Some(modal) = &self.refresh else {
+            return div();
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("refresh-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(hsla(0., 0., 0., 0.62))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.dismiss(window, cx))),
+            )
+            .child(
+                v_flex()
+                    .id("refresh")
+                    .relative()
+                    .w(px(460.))
+                    .p(px(20.))
+                    .gap(px(14.))
+                    .rounded(px(16.))
+                    .bg(ink::panel())
+                    .border_1()
+                    .border_color(ink::line_strong())
+                    .occlude()
+                    .key_context(MODAL)
+                    .on_action(cx.listener(|this, _: &Confirm, window, cx| this.confirm_refresh(window, cx)))
+                    .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
+                    .child(
+                        v_flex()
+                            .gap(px(6.))
+                            .child(caps("REFRESH LINK", ink::faint()))
+                            .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).line_clamp(2).child(modal.name.clone())),
+                    )
+                    .child(div().text_size(px(13.)).text_color(ink::muted()).child(
+                        "Links from many sites expire. Paste a fresh one for the same file: what's downloaded is kept when its size matches.",
+                    ))
+                    .child(
+                        div()
+                            .h(px(34.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(8.))
+                            .bg(ink::inset())
+                            .border_1()
+                            .border_color(if modal.error.is_some() { ink::red().opacity(0.45) } else { ink::line_strong() })
+                            .child(Input::new(&modal.input).appearance(false).font_family(MONO).text_size(px(12.)).h(px(28.)).px_0()),
+                    )
+                    .when_some(modal.error.clone(), |this, err| {
+                        this.child(div().text_size(px(12.)).text_color(ink::red()).child(err))
+                    })
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .justify_end()
+                            .child(caps("ESC", ink::faint()))
+                            .child(ghost_button("refresh-cancel", "Cancel").on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx))))
+                            .child(
+                                accent_button("refresh-ok", "Use this link", Some(Lucide::RotateCcw))
+                                    .h(px(32.))
+                                    .on_click(cx.listener(|this, _, window, cx| this.confirm_refresh(window, cx))),
+                            ),
+                    ),
             )
     }
 
@@ -3214,6 +3568,19 @@ fn row_menu(menu: PopupMenu, view: &WeakEntity<IdmView>, id: Id, cx: &App) -> Po
             RowAction::Restart,
             true,
         ))
+    })
+    .item(item(
+        "Refresh link…",
+        Lucide::Link,
+        RowAction::RefreshLink,
+        matches!(row.status, Status::Paused | Status::Failed | Status::Queued),
+    ))
+    .when(row.status == Status::Queued, |menu| {
+        menu.separator()
+            .item(item("Move to top", Lucide::Play, RowAction::Move(Move::Top), row.position > 1))
+            .item(item("Move up", Lucide::Play, RowAction::Move(Move::Up), row.position > 1))
+            .item(item("Move down", Lucide::Pause, RowAction::Move(Move::Down), true))
+            .item(item("Move to bottom", Lucide::Pause, RowAction::Move(Move::Bottom), true))
     })
     .separator()
     .item(item("Copy URL", Lucide::Copy, RowAction::CopyUrl, true))
@@ -3481,8 +3848,8 @@ fn meta_line(row: &Row, speed: f32) -> String {
             parts.push(format!("{} conn", row.connections));
             parts.join(" · ")
         }
-        Status::Queued if row.total == 0 => "waiting for a free slot".into(),
-        Status::Queued => format!("{} · waiting", format_bytes(row.total)),
+        Status::Queued if row.total == 0 => format!("#{} in queue · waiting for a free slot", row.position.max(1)),
+        Status::Queued => format!("#{} in queue · {}", row.position.max(1), format_bytes(row.total)),
         Status::Paused if row.resumable == Some(false) => {
             format!("{} · can't resume, restarts", size(row.done))
         }
@@ -3804,6 +4171,31 @@ fn render_empty_state() -> impl IntoElement {
             "OR SEND DOWNLOADS FROM YOUR BROWSER WITH THE SHARD EXTENSION",
             ink::faint(),
         ))
+}
+
+/// "Shutting down in 42 s · Cancel", across the top while the countdown runs.
+fn render_power_banner(alert: String, cx: &Context<IdmView>) -> impl IntoElement {
+    h_flex()
+        .absolute()
+        .top(px(60.))
+        .left_0()
+        .right_0()
+        .justify_center()
+        .child(
+            h_flex()
+                .gap(px(10.))
+                .pl(px(14.))
+                .pr(px(6.))
+                .py(px(6.))
+                .rounded_full()
+                .bg(ink::panel())
+                .border_1()
+                .border_color(ink::accent().opacity(0.55))
+                .shadow(glow(ink::accent(), 0.25, 18.))
+                .child(dot(ink::accent(), 7.))
+                .child(div().text_size(px(13.)).child(format!("{alert}. The downloads finished.")))
+                .child(ghost_button("power-cancel", "Cancel").on_click(cx.listener(|_, _, _, cx| cancel_power(cx)))),
+        )
 }
 
 fn render_command_error(err: SharedString, cx: &Context<IdmView>) -> impl IntoElement {
@@ -4911,6 +5303,10 @@ struct Shell {
     has_tray: bool,
     /// In the Dock (macOS); apps start there.
     docked: bool,
+    /// A sleep or shut down waiting to happen once the queue finished, and when.
+    power: Option<(WhenDone, Instant)>,
+    /// The copied link the last notification offered to download.
+    clip: Option<String>,
 }
 
 impl Global for Shell {}
@@ -4965,7 +5361,11 @@ fn dock(visible: bool, cx: &mut App) {
 /// closing; once a second, the tray's icon and text.
 fn run_shell(mut tray: Option<crate::tray::Tray>, cx: &mut App) {
     let mut shows = cx.global::<Shell>().manager.show_requests();
+    let mut drained = cx.global::<Shell>().manager.drained();
     let mut drawn_at: Option<Instant> = None;
+    // Statuses at the last look, and the clipboard's link: None until the first look, so nothing
+    // that was already there gets announced.
+    let (mut seen, mut clip_seen): (Option<HashMap<Id, Status>>, Option<Option<String>>) = (None, None);
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor().timer(Duration::from_millis(100)).await;
@@ -4991,7 +5391,13 @@ fn run_shell(mut tray: Option<crate::tray::Tray>, cx: &mut App) {
                         dock(false, cx);
                     }
                 }
-                due.then(|| tray_status(&manager))
+                due.then(|| {
+                    let (rows, settings) = (manager.rows(), manager.settings());
+                    announce(&rows, &settings, &mut seen, cx);
+                    offer_clipboard(&rows, &settings, &mut clip_seen, cx);
+                    keep_power(&manager, &settings, &rows, &mut drained, cx);
+                    tray_status(&rows, &settings, cx)
+                })
             });
             if let (Some(tray), Some(status)) = (tray.as_mut(), status) {
                 tray.update(&status);
@@ -5002,9 +5408,7 @@ fn run_shell(mut tray: Option<crate::tray::Tray>, cx: &mut App) {
     .detach();
 }
 
-fn tray_status(manager: &Manager) -> crate::tray::Status {
-    let rows = manager.rows();
-    let settings = manager.settings();
+fn tray_status(rows: &[Row], settings: &Settings, cx: &App) -> crate::tray::Status {
     let running: Vec<&Row> = rows.iter().filter(|r| r.status == Status::Downloading).collect();
     let queued = rows.iter().filter(|r| r.status == Status::Queued).count();
     let speed: u64 = running.iter().map(|r| r.speed).sum();
@@ -5024,6 +5428,116 @@ fn tray_status(manager: &Manager) -> crate::tray::Status {
         cap: settings.speed_limit,
         keep_awake: settings.keep_awake,
         launch_at_login: settings.launch_at_login,
+        alert: power_alert(cx),
+        update: None,
+    }
+}
+
+/// "Shutting down in 42 s", while one is counting down.
+fn power_alert(cx: &App) -> Option<String> {
+    let (when, at) = cx.global::<Shell>().power?;
+    let secs = at.saturating_duration_since(Instant::now()).as_secs();
+    let doing = if when == WhenDone::ShutDown { "Shutting down" } else { "Sleeping" };
+    Some(format!("{doing} in {secs} s"))
+}
+
+/// A system notification for each download that finished or failed since the last look.
+fn announce(rows: &[Row], settings: &Settings, seen: &mut Option<HashMap<Id, Status>>, cx: &mut App) {
+    let now: HashMap<Id, Status> = rows.iter().map(|r| (r.id, r.status)).collect();
+    let before = seen.replace(now);
+    let Some(before) = before.filter(|_| settings.notify) else { return };
+    for r in rows {
+        if !matches!(before.get(&r.id), Some(Status::Downloading | Status::Queued)) {
+            continue;
+        }
+        let (title, body) = match r.status {
+            Status::Done => (format!("Downloaded {}", display_name(r)), format_bytes(r.total)),
+            Status::Failed => (format!("Couldn't download {}", display_name(r)), r.error.clone().unwrap_or_default()),
+            _ => continue,
+        };
+        cx.show_system_notification(SystemNotification {
+            tag: format!("row:{}", r.id).into(),
+            title: title.into(),
+            body: body.into(),
+            actions: Vec::new(),
+        });
+    }
+}
+
+/// When a link to a file is copied, a notification offering to download it.
+fn offer_clipboard(rows: &[Row], settings: &Settings, seen: &mut Option<Option<String>>, cx: &mut App) {
+    let link = clipboard_link(cx);
+    let Some(last) = seen.replace(link.clone()) else { return }; // the first look only remembers
+    let Some(url) = link.filter(|url| settings.watch_clipboard && last.as_ref() != Some(url)) else { return };
+    let name = url::Url::parse(&url)
+        .ok()
+        .and_then(|u| Some(percent_encoding::percent_decode_str(u.path_segments()?.next_back()?).decode_utf8_lossy().into_owned()))
+        .unwrap_or_default();
+    // Only links that look like files, and not ones already in the list.
+    if crate::queue::category(&name) == "Other" || rows.iter().any(|r| r.url == url) {
+        return;
+    }
+    cx.global_mut::<Shell>().clip = Some(url.clone());
+    cx.show_system_notification(SystemNotification {
+        tag: "clip".into(),
+        title: format!("Download {name}?").into(),
+        body: host(&url).into(),
+        actions: vec![SystemNotificationAction { id: "download".into(), label: "Download".into() }],
+    });
+}
+
+/// Once the queue finishes with "when done" set: a minute's warning, then sleep or shut down.
+fn keep_power(manager: &Manager, settings: &Settings, rows: &[Row], drained: &mut u64, cx: &mut App) {
+    let now = manager.drained();
+    if now != *drained {
+        *drained = now;
+        if settings.when_done != WhenDone::Nothing {
+            cx.global_mut::<Shell>().power = Some((settings.when_done, Instant::now() + Duration::from_secs(60)));
+            let title = if settings.when_done == WhenDone::ShutDown { "Shutting down in a minute" } else { "Sleeping in a minute" };
+            cx.show_system_notification(SystemNotification {
+                tag: "power".into(),
+                title: title.into(),
+                body: "The downloads finished.".into(),
+                actions: vec![SystemNotificationAction { id: "cancel".into(), label: "Cancel".into() }],
+            });
+        }
+    }
+    let Some((when, at)) = cx.global::<Shell>().power else { return };
+    if rows.iter().any(|r| matches!(r.status, Status::Downloading | Status::Queued)) {
+        cancel_power(cx); // something new started: the queue isn't done after all
+    } else if Instant::now() >= at {
+        cx.global_mut::<Shell>().power = None;
+        match when {
+            WhenDone::Sleep => crate::system::sleep_now(),
+            WhenDone::ShutDown => crate::system::shut_down(),
+            WhenDone::Nothing => {}
+        }
+    }
+}
+
+fn cancel_power(cx: &mut App) {
+    cx.global_mut::<Shell>().power = None;
+    cx.dismiss_system_notification("power");
+}
+
+fn notification_response(response: SystemNotificationResponse, cx: &mut App) {
+    match (response.tag.as_ref(), response.action_id.as_deref()) {
+        ("power", _) => cancel_power(cx),
+        ("clip", Some("download")) => {
+            if let Some(url) = cx.global_mut::<Shell>().clip.take()
+                && let Err(err) = cx.global::<Shell>().manager.add(&url)
+            {
+                eprintln!("shard: {err}");
+            }
+        }
+        // Clicking the offer itself opens the window, whose link bar picks up the copied link.
+        ("clip", None) => open_main(true, cx),
+        (tag, _) => {
+            if let Some(id) = tag.strip_prefix("row:").and_then(|id| id.parse().ok()) {
+                cx.global_mut::<Shell>().select = Some(id);
+            }
+            open_main(true, cx);
+        }
     }
 }
 
@@ -5047,6 +5561,8 @@ fn tray_event(event: crate::tray::Event, cx: &mut App) {
         Event::Cap(cap) => change(&|s| s.speed_limit = cap),
         Event::KeepAwake(on) => change(&|s| s.keep_awake = on),
         Event::LaunchAtLogin(on) => change(&|s| s.launch_at_login = on),
+        Event::CancelPower => cancel_power(cx),
+        Event::RestartToUpdate => {}
         Event::Quit => cx.quit(),
     }
 }

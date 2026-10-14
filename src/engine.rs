@@ -334,13 +334,12 @@ pub async fn fetch(
                     regrown_at = None;
                 }
                 let quiet = refused.elapsed() >= regrow_after && regrown_at.is_none_or(|t| t.elapsed() >= regrow_after);
-                if quiet && ctx.active.load(Relaxed) < n && ctx.plan.lock().unwrap().splittable() {
-                    if let Some(tx) = spare.upgrade() {
+                if quiet && ctx.active.load(Relaxed) < n && ctx.plan.lock().unwrap().splittable()
+                    && let Some(tx) = spare.upgrade() {
                         ctx.active.fetch_add(1, Relaxed);
                         workers.spawn(worker(ctx.clone(), tx));
                         regrown_at = Some(Instant::now());
                     }
-                }
             }
         }
     };
