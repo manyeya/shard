@@ -274,10 +274,16 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Release notes, from this version's section of CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" 'index($0, "## [" v "]") == 1 {on = 1; next} on && /^## \[/ {exit} on' CHANGELOG.md > release-notes.md
+          [ -s release-notes.md ] || echo "See [CHANGELOG.md](CHANGELOG.md)." > release-notes.md
+          cat release-notes.md
       - name: Signed update manifest
         working-directory: dist
         run: |
@@ -300,6 +306,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          body_path: release-notes.md
           generate_release_notes: true
 
   packages:
