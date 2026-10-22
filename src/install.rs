@@ -738,23 +738,27 @@ mod tests {
         remove_desktop_entry(&share).unwrap();
         assert!(!share.join("applications/shard.desktop").exists());
 
-        remove_app(&layout.app).unwrap();
-        assert!(!layout.app.exists());
-        remove_app(&layout.app).unwrap(); // already gone is fine
+        if cfg!(windows) {
+            remove_file(&layout.app).unwrap(); // remove_app waits for Shard to exit there
+        } else {
+            remove_app(&layout.app).unwrap();
+            assert!(!layout.app.exists());
+            remove_app(&layout.app).unwrap(); // already gone is fine
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn browsers_are_found_where_they_install() {
         let root = crate::engine::tests::scratch("browsers");
-        let (name, place) = (BROWSERS[1].0, BROWSERS[1].2[0]);
+        let (name, place) = (BROWSERS[0].0, BROWSERS[0].2[0]);
         let path = root.join(place);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"").unwrap();
         let found = find_browsers(&[root.join("nothing-here"), root.clone()]);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].name, found[0].path.clone()), (name, path));
-        assert_eq!(found[0].store, BROWSERS[1].1);
+        assert_eq!(found[0].store, BROWSERS[0].1);
         let _ = std::fs::remove_dir_all(root);
     }
 

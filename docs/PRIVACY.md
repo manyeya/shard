@@ -109,7 +109,9 @@ The extension's job is to hand downloads to Shard. It:
 - sends the URL, those cookies, the referrer and the browser's user agent to Shard on your own
   computer, `http://127.0.0.1:47110`, and nowhere else;
 - if Shard takes the download, cancels the browser's copy and removes it from the browser's
-  download list; if Shard isn't running or refuses, leaves the download to the browser.
+  download list; if Shard isn't running or refuses, leaves the download to the browser;
+- when it's installed or updated, sends an empty `POST /hello` to the same address, so setup can
+  show that it's connected. The message carries nothing; setup only counts that it arrived.
 
 Its permissions, and why each is needed, are listed in
 [SECURITY.md](../SECURITY.md#the-browser-extensions-permissions).

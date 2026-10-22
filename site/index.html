@@ -8,7 +8,10 @@
   <meta name="theme-color" content="#060707">
   <meta property="og:title" content="Shard: download in shards">
   <meta property="og:description" content="A download manager that fetches every file in parallel parts, and picks up where it stopped.">
-  <meta property="og:image" content="icon.png">
+  <meta property="og:image" content="https://manyeya.github.io/shard/social-preview.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="favicon.png">
   <link rel="preload" href="fonts/ArchivoExpanded-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="style.css">
@@ -238,34 +241,40 @@
         </div>
         <div class="plat" data-os="windows">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
-          <h3>Windows</h3><p>64-bit Windows 10 or later. Unzip and run Shard.exe.</p>
-          <div class="files" data-files="windows-x64.zip"></div>
+          <h3>Windows</h3><p>64-bit Windows 10 or later. The installer needs no administrator password.</p>
+          <div class="files" data-files="setup windows-x64.zip"></div>
           <span class="mono yours">Your computer</span>
         </div>
         <div class="plat" data-os="linux">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m7 10 3 2.5L7 15"/><path d="M12.5 15H17"/></svg>
           <h3>Linux</h3><p>x64 and arm64, glibc 2.35 or later.</p>
-          <div class="files" data-files="amd64.deb arm64.deb linux-x64.tar.gz linux-arm64.tar.gz"></div>
+          <div class="files" data-files="linux-x64.AppImage linux-arm64.AppImage amd64.deb arm64.deb x86_64.rpm aarch64.rpm linux-x64.tar.gz linux-arm64.tar.gz"></div>
           <span class="mono yours">Your computer</span>
         </div>
         <div class="plat" data-os="extension">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4a2 2 0 1 1 4 0v2h3v5h-2a2 2 0 1 0 0 4h2v5h-5v-2a2 2 0 1 0-4 0v2H7v-5H5a2 2 0 1 1 0-4h2V6h7z"/></svg>
-          <h3>Browser extension</h3><p>Chrome, Edge, Brave and Arc. Optional: Shard works without it.</p>
-          <div class="files" data-files="extension"></div>
+          <h3>Browser extension</h3><p>Hands your browser's downloads to Shard. Setup adds it from each browser's own store; Shard works without it too.</p>
+          <div class="files" data-stores></div>
         </div>
       </div>
       <p class="checksums" id="checksums"></p>
+      <div class="managers" aria-label="Package managers">
+        <div><span>Homebrew</span><code>brew install --cask manyeya/tap/shard</code></div>
+        <div><span>Scoop</span><code>scoop bucket add manyeya https://github.com/manyeya/scoop-bucket; scoop install shard</code></div>
+        <div><span>apt</span><code>sudo apt install ./shard_*.deb</code></div>
+        <div><span>dnf</span><code>sudo dnf install ./shard-*.rpm</code></div>
+      </div>
       <div class="install">
         <div>
-          <h3>Opening it the first time</h3>
-          <p><b>macOS:</b> Shard isn't signed by Apple yet. Open System Settings, then Privacy and Security, and choose Open Anyway.</p>
-          <p><b>Windows:</b> if SmartScreen holds it back, choose More info, then Run anyway.</p>
-          <p><b>Linux:</b> install the .deb with <code>sudo apt install ./shard_*.deb</code>, or unpack the tarball anywhere and run <code>./shard</code>.</p>
+          <h3>Installing</h3>
+          <p><b>macOS:</b> open the disk image and drag Shard to Applications, or open Shard there and it installs itself. Shard isn't notarised by Apple yet, so the first time, open System Settings, then Privacy and Security, and choose Open Anyway.</p>
+          <p><b>Windows:</b> run Shard-Setup. It installs for you alone, and adds Shard to the Start menu and to Settings › Apps, where you can remove it. If SmartScreen holds it back, choose More info, then Run anyway.</p>
+          <p><b>Linux:</b> make the AppImage executable and open it, and Shard offers to add itself to your apps. The .deb and .rpm install for everyone; the tarball runs from wherever you unpack it.</p>
         </div>
         <div>
-          <h3>Adding the extension</h3>
-          <p>Unzip it somewhere it can stay, open <code>chrome://extensions</code> (or <code>arc://extensions</code>) and turn on Developer mode.</p>
-          <p>Choose Load unpacked and pick the folder.</p>
+          <h3>The browser extension</h3>
+          <p>Setup finds your browsers and opens Shard's page in each one's store: the Chrome Web Store for Chrome, Arc, Brave, Vivaldi and Opera, Edge Add-ons for Edge, and Firefox Add-ons for Firefox. Click Add, and setup sees it connect.</p>
+          <p>The extension asks to manage downloads and to read cookies so it can pass a download, and the cookies it needs, to Shard on your computer. Nothing it reads leaves your computer; the <a href="privacy.html">privacy page</a> has the detail.</p>
         </div>
       </div>
     </section>
@@ -276,13 +285,14 @@
         <div>
           <details><summary>Is it free?</summary><p>Yes. The code is on GitHub, and there's nothing to buy or sign up for.</p></details>
           <details><summary>Will it make every download faster?</summary><p>Only when one connection isn't using your whole line, which is common: many servers and routes limit each connection. If one connection already fills it, you still get resuming, the queue and the rest.</p></details>
-          <details><summary>Does it send anything about me anywhere?</summary><p>No. Shard talks to the servers you download from, and to GitHub to check for updates. There's no account, no tracking and no analytics.</p></details>
+          <details><summary>Does it send anything about me anywhere?</summary><p>No. Shard talks to the servers you download from, and to GitHub to check for updates. There's no account, no tracking and no analytics. The <a href="privacy.html">privacy page</a> lists everything it keeps.</p></details>
           <details><summary>Where do files go?</summary><p>Your Downloads folder, unless you choose another, ask to be asked each time, or sort files into folders by kind.</p></details>
         </div>
         <div>
           <details><summary>A link stopped working halfway. Do I start again?</summary><p>No. Right-click the download, choose Refresh link and paste a fresh link to the same file. If it's the same size, Shard keeps everything it already has.</p></details>
           <details><summary>How does combining networks work?</summary><p>Each connection is tied to one of your networks, taking them in turn, so a download's parts come in over all of them. You need two working connections, such as Wi-Fi and Ethernet, or Wi-Fi and a phone over USB.</p></details>
           <details><summary>How does it update?</summary><p>It checks for a new version every six hours, downloads it quietly, checks its signature and asks you to restart. Nothing changes until you choose to.</p></details>
+          <details><summary>How do I remove it?</summary><p>On Windows, from Settings › Apps. On macOS, drag Shard from Applications to the Bin, or run <code>brew uninstall --cask shard</code>. On Linux, run <code>shard --uninstall</code>, or remove the package. Your downloaded files stay where they are.</p></details>
         </div>
       </div>
     </section>
@@ -303,6 +313,7 @@
         <a href="https://github.com/manyeya/shard">Source</a>
         <a href="https://github.com/manyeya/shard/releases">Releases</a>
         <a href="https://github.com/manyeya/shard/issues">Report a problem</a>
+        <a href="privacy.html">Privacy</a>
       </nav>
     </div>
     <div class="disp wordmark" aria-hidden="true">

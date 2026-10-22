@@ -202,6 +202,11 @@ canvas.fill { width: 100%; }
 .file.best { background: var(--lime); border-color: var(--lime); color: var(--ink); }
 .file.best small { color: rgba(10, 12, 6, 0.65); }
 .checksums { margin: 18px 0 0; font-size: 14px; color: var(--faint); }
+.file.soon { opacity: 0.55; cursor: default; }
+.managers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin-top: 40px; }
+.managers div { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 12px 16px; border-radius: 14px; background: #0d0e0c; border: 1px solid rgba(255, 255, 255, 0.08); }
+.managers span { flex: none; width: 76px; font-size: 13px; color: var(--faint); }
+.managers code { min-width: 0; overflow-x: auto; white-space: nowrap; background: none; padding: 0; }
 .install { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; margin-top: 64px; font-size: 15px; color: var(--muted); }
 .install h3 { margin: 0 0 12px; color: var(--text); font-size: 18px; font-weight: 600; }
 .install p { margin: 0 0 10px; }
@@ -258,3 +263,16 @@ details p { margin: 0 0 22px; font-size: 16px; color: var(--muted); max-width: 6
   .shard-beam { animation: none; }
 }
 @media (max-width: 640px) { .console-bar .dim { display: none; } }
+@media (max-width: 980px) { .managers { grid-template-columns: 1fr; } }
+
+/* The privacy page: one column of prose. */
+.prose { max-width: 760px; padding-top: 96px; font-size: 17px; line-height: 1.65; color: var(--muted); }
+.prose h1 { margin: 0 0 24px; font-size: clamp(40px, 7vw, 64px); line-height: 1.05; color: var(--text); }
+.prose h2 { margin: 56px 0 14px; font-size: 24px; color: var(--text); font-weight: 600; }
+.prose h3 { margin: 28px 0 8px; font-size: 18px; color: var(--text); font-weight: 600; }
+.prose .lede { font-size: 20px; color: var(--text); }
+.prose .meta { font-size: 13px; color: var(--faint); }
+.prose ul { padding-left: 1.2em; }
+.prose li { margin: 6px 0; }
+.prose b { color: var(--text); font-weight: 500; }
+.prose a { color: var(--lime-pale); }

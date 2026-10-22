@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shard privacy</title>
+  <meta name="description" content="What Shard and its browser extension send, what they keep on your computer, and how to delete it. No accounts, no analytics, no telemetry.">
+  <meta name="theme-color" content="#060707">
+  <link rel="icon" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<div class="page">
+  <header class="wrap nav">
+    <a class="brand" href="./" aria-label="Shard, the home page">
+      <img src="logo.svg" alt="" width="28" height="28">
+      <span class="disp">Shard</span>
+    </a>
+    <nav class="navlinks" aria-label="Sections">
+      <a href="./#how">How it works</a>
+      <a href="./#features">Features</a>
+      <a href="./#download">Download</a>
+      <a href="./#faq">FAQ</a>
+    </nav>
+    <a class="nav-github" href="https://github.com/manyeya/shard">GitHub</a>
+  </header>
+
+  <main id="main" class="wrap prose">
+    <h1 class="disp">Privacy</h1>
+    <p class="lede">Shard and its browser extension have no accounts, no analytics, no telemetry and no crash reporting. Nothing about you or your downloads is sent to the people who make Shard. This page lists every request Shard makes on its own and everything it keeps.</p>
+    <p class="meta mono">Last changed 22 October 2026. The same page, kept with the code: <a href="https://github.com/manyeya/shard/blob/main/docs/PRIVACY.md">docs/PRIVACY.md</a>.</p>
+
+    <h2>The browser extension</h2>
+    <p>The extension, "Shard integration", hands your browser's downloads to the Shard app on the same computer. It:</p>
+    <ul>
+      <li>acts only when the browser starts a download. It has no content scripts and never reads the pages you visit;</li>
+      <li>reads the cookies for that download's address, at that moment, so the server lets Shard fetch the file as it would have let the browser;</li>
+      <li>sends the download's address, those cookies, the referring page and the browser's user agent to Shard at <code>http://127.0.0.1:47110</code>, an address only your own computer can reach, and nowhere else;</li>
+      <li>when Shard takes the download, cancels the browser's copy; when Shard isn't running, leaves the download to the browser;</li>
+      <li>when it's installed, says an empty hello to the same address, so Shard's setup can show it's connected.</li>
+    </ul>
+    <p>It asks for three permissions. <b>Downloads</b>, to see a download start and to cancel the browser's copy. <b>Cookies</b>, to pass a download's cookies along with it. <b>Access to all sites</b>, because downloads can come from any site and the cookies are read per site, and to reach Shard on your computer. No data the extension handles is sold, used for advertising, or transferred to anyone.</p>
+
+    <h2>What Shard sends, and to whom</h2>
+    <h3>The servers you download from</h3>
+    <p>Shard asks the server for the file you added, over one or more connections. For downloads the extension handed over, it sends the cookies, referrer and user agent the browser gave it, exactly as the browser would have; otherwise its user agent is <code>shard/&lt;version&gt;</code>. Those servers see your IP address, as they would for any download.</p>
+    <h3>GitHub, to check for updates</h3>
+    <p>With "Update automatically" on (the default), Shard checks for a new version when it starts and every six hours, by fetching two small files from Shard's releases on GitHub. If there's a newer version, it downloads the build for your computer from GitHub too, and checks its signature before offering to restart. These requests carry only the user agent <code>shard/&lt;version&gt;</code>. Turn "Update automatically" off in Shard's limits panel to stop them.</p>
+    <h3>Nothing else</h3>
+    <p>The fonts and icons are built in, notifications are your system's own, and finding your networks to combine them happens on your computer. There are no other requests.</p>
+
+    <h2>What Shard keeps on your computer</h2>
+    <p>Everything stays in your user account, in Shard's data folder: <code>~/Library/Application Support/shard</code> on macOS, <code>%APPDATA%\shard</code> on Windows, <code>~/.local/share/shard</code> on Linux.</p>
+    <ul>
+      <li>A database of your downloads (address, folder, name, size, progress, status) and your settings.</li>
+      <li>For downloads from the extension, the cookies, referrer and user agent, so they can resume after a pause, a crash or a restart. They're removed when the download finishes. On macOS and Linux the folder is readable only by you.</li>
+      <li>Update builds Shard downloaded, until they're installed.</li>
+    </ul>
+    <p>Next to an unfinished download, in its folder, are the bytes so far and a small file recording how far each part got. Both go when the download finishes or is removed.</p>
+    <p>With "Offer copied links" on (the default), Shard looks at the clipboard once a second for a single web link to a file, so it can offer to download it. It doesn't store or send what it sees there.</p>
+
+    <h2>Deleting it</h2>
+    <p>Removing a download from the list deletes what Shard kept about it. To delete everything, uninstall Shard and choose to delete its history and settings, or quit Shard and delete the data folder. Removing the extension from your browser removes the extension and everything it had.</p>
+
+    <h2>This website</h2>
+    <p>This site is static, hosted by GitHub Pages, with no analytics, cookies or third-party scripts. To show the latest release, your browser asks GitHub's API for it. GitHub's own <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement">privacy statement</a> covers those requests and the page views.</p>
+
+    <h2>Questions</h2>
+    <p>Ask in <a href="https://github.com/manyeya/shard/discussions">Discussions</a>, or report a security problem privately through <a href="https://github.com/manyeya/shard/security/advisories/new">GitHub</a>. If Shard ever makes a new kind of request, this page changes with it.</p>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-row">
+      <span>A download manager for macOS, Windows and Linux.</span>
+      <nav aria-label="Elsewhere">
+        <a href="https://github.com/manyeya/shard">Source</a>
+        <a href="https://github.com/manyeya/shard/releases">Releases</a>
+        <a href="https://github.com/manyeya/shard/issues">Report a problem</a>
+        <a href="privacy.html" aria-current="page">Privacy</a>
+      </nav>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

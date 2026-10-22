@@ -970,13 +970,23 @@ new Demo().start();
 const RELEASES = "https://github.com/manyeya/shard/releases";
 const LABELS = {
   "macos-universal.dmg": "Disk image",
-  "windows-x64.zip": "Zip, 64-bit",
+  setup: "Installer",
+  "windows-x64.zip": "Portable zip",
+  "linux-x64.AppImage": "AppImage for x64",
+  "linux-arm64.AppImage": "AppImage for arm64",
   "amd64.deb": ".deb for x64",
   "arm64.deb": ".deb for arm64",
+  "x86_64.rpm": ".rpm for x64",
+  "aarch64.rpm": ".rpm for arm64",
   "linux-x64.tar.gz": "Tarball for x64",
   "linux-arm64.tar.gz": "Tarball for arm64",
-  extension: "Extension, zipped",
 };
+// The extension's pages in each store: the ids go here once each listing is live.
+const STORES = [
+  { name: "Chrome Web Store", url: null },
+  { name: "Edge Add-ons", url: null },
+  { name: "Firefox Add-ons", url: null },
+];
 const NAMES = { mac: "macOS", windows: "Windows", linux: "Linux" };
 
 function visitor() {
@@ -991,8 +1001,8 @@ function visitor() {
 }
 function bestFile(os) {
   if (os === "mac") return "macos-universal.dmg";
-  if (os === "windows") return "windows-x64.zip";
-  if (os === "linux") return /aarch64|arm64/i.test(`${navigator.userAgent} ${navigator.platform}`) ? "arm64.deb" : "amd64.deb";
+  if (os === "windows") return "setup";
+  if (os === "linux") return /aarch64|arm64/i.test(`${navigator.userAgent} ${navigator.platform}`) ? "linux-arm64.AppImage" : "linux-x64.AppImage";
   return null;
 }
 function fileLink(href, text, size, best) {
@@ -1021,7 +1031,7 @@ if (os) {
 
 function showRelease(release) {
   const assets = release.assets || [];
-  const find = (hint) => assets.find((a) => (hint === "extension" ? a.name.includes("extension") : a.name.endsWith(hint)));
+  const find = (hint) => assets.find((a) => (hint === "setup" ? a.name.startsWith("Shard-Setup-") : a.name.endsWith(hint)));
   const version = release.tag_name.replace(/^v/, "");
   const date = new Date(release.published_at).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
   const line = $("release-line");
@@ -1031,7 +1041,7 @@ function showRelease(release) {
   notes.textContent = "What's new";
   line.append(notes);
 
-  for (const box of document.querySelectorAll(".files")) {
+  for (const box of document.querySelectorAll(".files[data-files]")) {
     for (const hint of box.dataset.files.split(" ")) {
       const asset = find(hint);
       if (asset) box.append(fileLink(asset.browser_download_url, LABELS[hint], megabytes(asset.size), hint === best));
@@ -1061,11 +1071,27 @@ function noRelease(none) {
   set($("release-line"), none
     ? "There's no release yet. The first one will be listed here and on GitHub."
     : "GitHub didn't answer just now, so here are its release pages instead.");
-  for (const box of document.querySelectorAll(".files")) box.append(fileLink(none ? RELEASES : `${RELEASES}/latest`, "Releases on GitHub"));
+  for (const box of document.querySelectorAll(".files[data-files]")) box.append(fileLink(none ? RELEASES : `${RELEASES}/latest`, "Releases on GitHub"));
   if (none) {
     set($("get-note"), "No release yet. Follow along on GitHub.");
     $("get").href = RELEASES;
     $("get2").href = RELEASES;
+  }
+}
+
+// The stores: a link where the listing is live, and a note where it's still on its way.
+for (const box of document.querySelectorAll("[data-stores]")) {
+  for (const store of STORES) {
+    if (store.url) box.append(fileLink(store.url, store.name));
+    else {
+      const soon = document.createElement("span");
+      soon.className = "file soon";
+      soon.append(store.name);
+      const small = document.createElement("small");
+      small.textContent = "On its way";
+      soon.append(small);
+      box.append(soon);
+    }
   }
 }
 
