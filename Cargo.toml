@@ -17,7 +17,7 @@ bytes = "1.12.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 ed25519-dalek = "3"
 if-addrs = "0.15"
-gpui-kit = "0.7"
+gpui-kit = "0.8"
 keepawake = "0.6"
 percent-encoding = "2.3.2"
 reqwest = "0.13.5"
