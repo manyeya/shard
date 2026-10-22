@@ -931,18 +931,22 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn orders_sorts_into_folders_and_keeps_the_schedule() {
         let body = body();
-        let (url, _log) = serve(body.clone(), 100);
+        let (url, log) = serve(body.clone(), 100);
         let dir = scratch("queue-order");
         let dl = dir.join("dl");
         let m = Manager::open(&dir.join("shard.db"), dl.clone(), Handle::current()).unwrap();
         m.set_settings(Settings { dir: dl.clone(), max_active: 1, sort_into_folders: true, ..m.settings() }).unwrap();
         m.pause_all();
+        // Slow enough that `a` can't finish (and let the next one start) while the order is checked.
+        log.delay.store(200, std::sync::atomic::Ordering::SeqCst);
         let (a, b) = (m.add(&format!("{url}?a")).unwrap(), m.add_to(&format!("{url}?b"), dir.join("elsewhere")).unwrap());
         let c = m.add(&format!("{url}?c")).unwrap();
         // `a` started at once (a free slot); `b` and `c` wait, in that order. Move `c` up front.
         m.move_to(c, Move::Top);
-        let pos = |id| m.rows().iter().find(|r| r.id == id).unwrap().position;
+        let rows = m.rows();
+        let pos = |id| rows.iter().find(|r| r.id == id).unwrap().position;
         assert_eq!((pos(c), pos(b)), (1, 2), "moved to the top of the waiting line");
+        log.delay.store(2, std::sync::atomic::Ordering::SeqCst);
 
         // At its stop time the scheduler pauses everything; at its start time it resumes them.
         let at = |h, mi| chrono::Local::now().with_hour(h).unwrap().with_minute(mi).unwrap();

@@ -709,7 +709,7 @@ pub(crate) mod tests {
         /// Connections served at once, at most; above it the server answers 429.
         max_conns: AtomicUsize,
         /// Milliseconds between 64 KB chunks.
-        delay: AtomicU64,
+        pub(crate) delay: AtomicU64,
         /// The most connections being served at once.
         peak: AtomicUsize,
         /// The ETag it sends; "v1" unless a test changes it.
