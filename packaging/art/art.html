@@ -1,0 +1,173 @@
+<!doctype html>
+<!-- The release and store artwork, drawn in the site's style. scripts/render-art.sh opens
+     art.html?<name> at that piece's size and saves it: the disk image's window background, the
+     store tiles and screenshots, and GitHub's social preview. console.png is the site's live
+     console, captured by the same script. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shard artwork</title>
+<style>
+  @font-face { font-family: "Archivo Expanded"; src: url("../../site/fonts/ArchivoExpanded-ExtraBold.ttf"); font-weight: 800; }
+  @font-face { font-family: "Geist"; src: url("../../site/fonts/Geist-Regular.ttf"); font-weight: 400; }
+  @font-face { font-family: "Geist"; src: url("../../site/fonts/Geist-Medium.ttf"); font-weight: 500; }
+  @font-face { font-family: "Geist"; src: url("../../site/fonts/Geist-SemiBold.ttf"); font-weight: 600; }
+  @font-face { font-family: "Geist Mono"; src: url("../../site/fonts/GeistMono-Regular.ttf"); font-weight: 400; }
+  :root {
+    --bg: #0a0a0b; --panel: #101012; --card: #161618; --inset: #1e1e21;
+    --line: rgba(255,255,255,.07); --line-strong: #2c2c30;
+    --text: #ededef; --muted: #a1a1a8; --faint: #6c6c74;
+    --lime: #a3e635; --lime2: #d9f99d;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: var(--bg); color: var(--text); font-family: Geist, sans-serif; }
+  .piece { position: relative; overflow: hidden; display: none; background: var(--bg); }
+  .piece.on { display: block; }
+  /* The dot field and the light behind the mark, as on the site and in setup. */
+  .field::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(255,255,255,.07) 1px, transparent 1.4px); background-size: 22px 22px; background-position: 11px 11px; }
+  .glow { position: absolute; border-radius: 50%; background: radial-gradient(closest-side, rgba(163,230,53,.22), rgba(163,230,53,.07) 55%, transparent); pointer-events: none; }
+  .display { font-family: "Archivo Expanded", sans-serif; font-weight: 800; letter-spacing: -.01em; }
+  .mono { font-family: "Geist Mono", monospace; }
+  .mark { display: block; }
+  /* A segmented bar: parts filling at different rates, the way Shard draws a download. */
+  .parts { display: flex; gap: 4px; }
+  .parts i { flex: 1; height: 100%; border-radius: 3px; background: var(--inset); position: relative; overflow: hidden; }
+  .parts i::after { content: ""; position: absolute; inset: 0; width: var(--f); background: linear-gradient(90deg, var(--lime), var(--lime2)); border-radius: 3px; }
+  .parts i.live::before { content: ""; position: absolute; top: -2px; bottom: -2px; left: calc(var(--f) - 1px); width: 2px; background: #fff; box-shadow: 0 0 10px var(--lime2); z-index: 1; }
+
+  /* Disk image window: 660×420, with Finder drawing the icons at (170, 205) and (490, 205). The
+     image runs on past that, because some versions of Finder open the window wider and taller. */
+  #dmg { width: 1000px; height: 480px; }
+  #dmg h1 { position: absolute; top: 44px; width: 660px; text-align: center; font-size: 22px; }
+  #dmg p { position: absolute; top: 80px; width: 660px; text-align: center; font-size: 13px; color: var(--muted); }
+  #dmg .arrow { position: absolute; left: 262px; top: 197px; width: 136px; height: 16px; display: flex; align-items: center; gap: 6px; }
+  #dmg .arrow b { height: 4px; border-radius: 2px; background: var(--lime); flex: 1; }
+  #dmg .arrow b:nth-child(1) { opacity: .3; } #dmg .arrow b:nth-child(2) { opacity: .55; } #dmg .arrow b:nth-child(3) { opacity: .8; }
+  #dmg .arrow svg { flex: none; }
+  /* Plates under Finder's labels: dark enough for white text (dark mode), light enough for black. */
+  #dmg .plate { position: absolute; top: 270px; width: 118px; height: 22px; margin-left: -59px; border-radius: 11px; background: #737a6a; }
+  #dmg .foot { position: absolute; top: 384px; width: 660px; text-align: center; font-size: 11px; color: var(--faint); }
+
+  /* GitHub social preview: 1280×640. */
+  #social { width: 1280px; height: 640px; }
+  #social .mark { position: absolute; left: 110px; top: 150px; width: 300px; height: 300px; }
+  #social h1 { position: absolute; left: 470px; top: 176px; font-size: 104px; line-height: 1; }
+  #social p { position: absolute; left: 474px; top: 312px; font-size: 30px; color: var(--muted); width: 700px; line-height: 1.35; }
+  #social .parts { position: absolute; left: 474px; top: 440px; width: 690px; height: 12px; }
+  #social .os { position: absolute; left: 474px; top: 478px; font-size: 18px; color: var(--faint); }
+
+  /* Store tiles. */
+  #promo-small { width: 440px; height: 280px; }
+  #promo-small .mark { position: absolute; left: 34px; top: 74px; width: 132px; height: 132px; }
+  #promo-small h1 { position: absolute; left: 188px; top: 98px; font-size: 40px; }
+  #promo-small p { position: absolute; left: 190px; top: 152px; font-size: 15px; color: var(--muted); width: 220px; line-height: 1.4; }
+  #marquee { width: 1400px; height: 560px; }
+  #marquee .copy { position: absolute; left: 90px; top: 128px; width: 470px; }
+  #marquee h1 { font-size: 50px; line-height: 1.08; }
+  #marquee p { margin-top: 22px; font-size: 19px; color: var(--muted); line-height: 1.5; }
+  #marquee .shot { position: absolute; left: 610px; top: 64px; width: 740px; }
+
+  /* Store screenshots: 1280×800. */
+  .shot1, .shot2 { width: 1280px; height: 800px; }
+  .head { position: absolute; left: 80px; top: 64px; width: 1120px; }
+  .head h1 { font-size: 40px; line-height: 1.1; }
+  .head p { margin-top: 14px; font-size: 18px; color: var(--muted); max-width: 760px; line-height: 1.45; }
+  .console { border-radius: 16px; border: 1px solid var(--line-strong); box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(163,230,53,.05); display: block; }
+
+  /* A browser, small, handing a download over. */
+  .browser { position: absolute; width: 470px; height: 330px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 24px 60px rgba(0,0,0,.55); overflow: hidden; }
+  .browser .bar { height: 38px; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .browser .dots { display: flex; gap: 6px; } .browser .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+  .browser .addr { flex: 1; height: 24px; border-radius: 7px; background: var(--inset); font: 11px "Geist Mono"; color: var(--muted); display: flex; align-items: center; padding: 0 10px; }
+  .browser .ext { width: 22px; height: 22px; border-radius: 6px; background: var(--bg); border: 1px solid rgba(163,230,53,.5); display: grid; place-items: center; box-shadow: 0 0 12px rgba(163,230,53,.35); }
+  .browser .page { padding: 26px 28px; }
+  .browser .page h2 { font-size: 20px; font-weight: 600; }
+  .browser .page .meta { margin-top: 6px; font-size: 13px; color: var(--faint); }
+  .browser .btn { margin-top: 22px; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 18px; border-radius: 10px; background: #e6e6e6; color: #0a0a0b; font-weight: 600; font-size: 14px; }
+  .browser .toast { position: absolute; right: 14px; bottom: 16px; display: flex; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 1px solid rgba(163,230,53,.45); box-shadow: 0 0 28px rgba(163,230,53,.18); font-size: 13px; }
+  .browser .toast small { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+  .pointer { position: absolute; width: 18px; height: 26px; }
+  .handoff { position: absolute; display: flex; align-items: center; gap: 7px; }
+  .handoff b { width: 26px; height: 4px; border-radius: 2px; background: var(--lime); }
+  .tag { position: absolute; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .tag::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 10px var(--lime); }
+</style>
+</head>
+<body>
+
+<template id="logo"><img class="mark" src="../../assets/logo/shard-mark.svg" alt=""></template>
+
+<section id="dmg" class="piece field">
+  <div class="glow" style="left:130px;top:80px;width:400px;height:260px"></div>
+  <h1 class="display">Install Shard</h1>
+  <p>Drag it to Applications, or open it and Shard installs itself.</p>
+  <div class="plate" style="left:170px"></div>
+  <div class="plate" style="left:490px"></div>
+  <div class="arrow"><b></b><b></b><b></b>
+    <svg width="14" height="16" viewBox="0 0 14 16"><path d="M2 1.5 L11.5 8 L2 14.5" fill="none" stroke="#a3e635" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="foot mono">manyeya.github.io/shard</div>
+</section>
+
+<section id="social" class="piece field">
+  <div class="glow" style="left:20px;top:40px;width:520px;height:520px"></div>
+  <div data-logo></div>
+  <h1 class="display">Shard</h1>
+  <p>A download manager that brings every file down in parallel parts, and picks up after anything.</p>
+  <div class="parts"><i class="" style="--f:100%"></i><i style="--f:100%"></i><i class="live" style="--f:72%"></i><i style="--f:100%"></i><i class="live" style="--f:48%"></i><i class="live" style="--f:86%"></i><i class="live" style="--f:30%"></i><i class="live" style="--f:61%"></i></div>
+  <div class="os">For macOS, Windows and Linux, with extensions for Chrome, Edge and Firefox</div>
+</section>
+
+<section id="promo-small" class="piece field">
+  <div class="glow" style="left:-10px;top:30px;width:220px;height:220px"></div>
+  <div data-logo></div>
+  <h1 class="display">Shard</h1>
+  <p>Your browser's downloads, in parallel parts</p>
+</section>
+
+<section id="marquee" class="piece field">
+  <div class="glow" style="left:700px;top:20px;width:620px;height:520px"></div>
+  <div class="copy">
+    <h1 class="display">Hand your downloads to Shard</h1>
+    <p>Click a download as usual. Shard takes it over, fetches it over many connections at once, and resumes it if anything stops it.</p>
+  </div>
+  <img class="shot console" src="console.png" alt="">
+</section>
+
+<section id="shot-1" class="piece field shot1">
+  <div class="glow" style="left:620px;top:200px;width:700px;height:560px"></div>
+  <div class="head">
+    <h1 class="display">Your downloads, handed to Shard</h1>
+    <p>Start a download the way you always do. The extension passes it to the Shard app, with the cookies it needs; if Shard isn't running, the browser keeps it.</p>
+  </div>
+  <div class="browser" style="left:80px;top:286px">
+    <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="addr">releases.example.org/datasets</div><div class="ext"><img src="../../assets/logo/shard-mark.svg" width="14" height="14" alt=""></div></div>
+    <div class="page">
+      <h2>Open imagery, 2026 edition</h2>
+      <div class="meta">satellite-tiles-2026.tar &nbsp; 2.7 GB</div>
+      <div class="btn">Download</div>
+    </div>
+    <div class="toast"><img src="../../assets/logo/shard-mark.svg" width="22" height="22" alt=""><div>Shard took this download<small>8 connections, resuming if it's cut off</small></div></div>
+  </div>
+  <svg class="pointer" style="left:196px;top:500px" viewBox="0 0 12 19"><path d="M0 0 L0 16 L4.2 12.4 L7 18.6 L9.6 17.4 L6.9 11.4 L12 11.2 Z" fill="#fff" stroke="#0a0a0b" stroke-width="1"/></svg>
+  <div class="handoff" style="left:570px;top:448px"><b style="opacity:.3"></b><b style="opacity:.6"></b><b></b></div>
+  <img class="console" src="console.png" alt="" style="position:absolute;left:676px;top:250px;width:540px">
+</section>
+
+<section id="shot-2" class="piece field shot2">
+  <div class="glow" style="left:200px;top:240px;width:880px;height:560px"></div>
+  <div class="head">
+    <h1 class="display">Every file in parallel parts</h1>
+    <p>Each connection takes a part; when one finishes, it splits the biggest part left. Pause, quit or crash, and the download picks up where it stopped.</p>
+  </div>
+  <img class="console" src="console.png" alt="" style="position:absolute;left:150px;top:236px;width:980px">
+</section>
+
+<script>
+  // Show only the piece named in the query, with the logo filled in wherever it's asked for.
+  const name = location.search.slice(1) || "dmg";
+  document.getElementById(name).classList.add("on");
+  for (const slot of document.querySelectorAll("[data-logo]")) slot.replaceWith(document.getElementById("logo").content.cloneNode(true));
+</script>
+</body>
+</html>

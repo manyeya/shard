@@ -1,12 +1,21 @@
 # Push a tag vX.Y.Z (matching Cargo.toml's version) to build every platform and publish a GitHub
-# release with checksums. Run it by hand (workflow_dispatch) to build the packages without releasing.
+# release with checksums, then update the Homebrew tap and the Scoop bucket and send the extension
+# to the browser stores. Run it by hand (workflow_dispatch) to build the packages without releasing.
 #
-# Optional secrets; each step that needs one is skipped without it:
-#   macOS signing and notarising: MACOS_CERTIFICATE (a Developer ID Application .p12, base64),
-#     MACOS_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
-#   Chrome Web Store: CWS_EXTENSION_ID, CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN
 # Required for a release: UPDATE_SIGNING_KEY, the Ed25519 private key (PEM) that signs update.txt,
 # which installed copies check before updating themselves.
+#
+# Optional; each step that needs one is skipped without it (docs/RELEASING.md, docs/STORES.md):
+#   macOS signing and notarising: MACOS_CERTIFICATE (a Developer ID Application .p12, base64),
+#     MACOS_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
+#   Homebrew and Scoop: TAP_DEPLOY_KEY, BUCKET_DEPLOY_KEY (SSH keys allowed to push to
+#     manyeya/homebrew-tap and manyeya/scoop-bucket)
+#   Chrome Web Store: CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN
+#   Edge Add-ons: EDGE_PRODUCT_ID, EDGE_CLIENT_ID, EDGE_API_KEY
+#   Firefox Add-ons: AMO_JWT_ISSUER, AMO_JWT_SECRET
+# Repository variables (not secrets; they're public): CHROME_STORE_ID, EDGE_STORE_ID and
+# FIREFOX_STORE_SLUG, the extension's ids in each store. Builds carry them, so setup can open
+# Shard's page in each browser's store; a store without one isn't offered.
 name: Release
 
 on:
@@ -16,6 +25,11 @@ on:
 
 permissions:
   contents: write
+
+env:
+  SHARD_CHROME_STORE_ID: ${{ vars.CHROME_STORE_ID }}
+  SHARD_EDGE_STORE_ID: ${{ vars.EDGE_STORE_ID }}
+  SHARD_FIREFOX_STORE_SLUG: ${{ vars.FIREFOX_STORE_SLUG }}
 
 jobs:
   version:
@@ -67,22 +81,20 @@ jobs:
           echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          # shellcheck disable=SC2046 # the existing keychains, one word each
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
           [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE"; exit 1; }
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
       - name: Bundle Shard.app
         run: BIN=target/universal/shard scripts/bundle-macos.sh
+      - name: Check setup installs and removes it
+        run: scripts/test-setup.sh target/release/Shard.app
       - name: Disk image
         run: |
+          brew install create-dmg
           dmg="Shard-$VERSION-macos-universal.dmg"
-          mkdir dmg && cp -R target/release/Shard.app dmg/ && ln -s /Applications dmg/Applications
-          # hdiutil sometimes fails with "Resource busy" on hosted runners; a retry gets past it.
-          for attempt in 1 2 3; do
-            hdiutil create -volname Shard -srcfolder dmg -ov -format UDZO "$dmg" && break
-            sleep 5
-          done
-          [ -f "$dmg" ]
+          scripts/make-dmg.sh target/release/Shard.app "$dmg"
           if [ -n "${SIGN_IDENTITY:-}" ]; then codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg"; fi
           echo "DMG=$dmg" >> "$GITHUB_ENV"
       - name: Notarise
@@ -118,10 +130,15 @@ jobs:
           $name = "Shard-$env:VERSION-windows-x64"
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/release/shard.exe "$name/Shard.exe"
-          Copy-Item README.md $name
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $name
           Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
+          # The installer: the same program, which installs itself when its name says Setup.
+          Copy-Item target/release/shard.exe "Shard-Setup-$env:VERSION-windows-x64.exe"
           # What installed copies update from: the bare binary.
           Copy-Item target/release/shard.exe "$name.exe"
+      - name: Check setup installs and removes it
+        shell: pwsh
+        run: scripts/test-setup.ps1 "Shard-Setup-$env:VERSION-windows-x64.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -138,10 +155,12 @@ jobs:
           - runner: ubuntu-22.04
             arch: x64
             deb: amd64
+            uname: x86_64
           # GitHub's arm64 Linux runners are free for public repositories; drop this for a private one.
           - runner: ubuntu-22.04-arm
             arch: arm64
             deb: arm64
+            uname: aarch64
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -152,17 +171,37 @@ jobs:
       - run: scripts/linux-deps.sh
       # Built on 22.04, so the binary runs on any distribution with glibc 2.35 or later.
       - run: cargo build --release --locked
-      - name: Package
+      - name: Check setup installs and removes it
+        run: scripts/test-setup.sh target/release/shard
+      - name: Tarball and .deb
         run: |
           name="shard-$VERSION-linux-${{ matrix.arch }}"
           mkdir "$name"
-          cp target/release/shard packaging/linux/shard.desktop README.md "$name/"
+          cp target/release/shard packaging/linux/shard.desktop README.md LICENSE-MIT LICENSE-APACHE "$name/"
           cp assets/icons/png/shard-512.png "$name/shard.png"
           tar czf "$name.tar.gz" "$name"
           cargo install cargo-deb --locked
           cargo deb --no-build --output "shard_${VERSION}_${{ matrix.deb }}.deb"
           # What installed copies update from: the bare binary.
-          cp target/release/shard "$name"
+          rm -r "$name" && cp target/release/shard "$name"
+      - name: .rpm
+        run: |
+          cargo install cargo-generate-rpm --locked --version 0.21.1
+          cargo generate-rpm --output "shard-$VERSION-1.${{ matrix.uname }}.rpm"
+      - name: AppImage
+        run: |
+          sudo apt-get install -y --no-install-recommends file
+          curl -fsSL -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${{ matrix.uname }}.AppImage"
+          chmod +x appimagetool
+          app=AppDir
+          mkdir -p "$app/usr/bin" "$app/usr/share/applications" "$app/usr/share/icons/hicolor/512x512/apps"
+          cp target/release/shard "$app/usr/bin/"
+          cp packaging/linux/shard.desktop "$app/usr/share/applications/"
+          cp packaging/linux/shard.desktop "$app/"
+          cp assets/icons/png/shard-512.png "$app/usr/share/icons/hicolor/512x512/apps/shard.png"
+          cp assets/icons/png/shard-512.png "$app/shard.png"
+          ln -s usr/bin/shard "$app/AppRun"
+          ARCH=${{ matrix.uname }} ./appimagetool --appimage-extract-and-run "$app" "Shard-$VERSION-linux-${{ matrix.arch }}.AppImage"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
@@ -170,31 +209,58 @@ jobs:
             shard-*-linux-*.tar.gz
             shard-*-linux-${{ matrix.arch }}
             shard_*.deb
+            shard-*.rpm
+            Shard-*.AppImage
 
   extension:
     needs: version
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
-      CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
-      CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
-      REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+      # Here rather than on the steps, so each step's `if` can see whether they're set.
+      CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+      EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
     steps:
       - uses: actions/checkout@v4
-      - name: Package
+      - name: Package for Chrome, Edge and Firefox
         run: |
-          python3 - <<'PY'
-          import json, os
-          path = "extension/manifest.json"
-          manifest = json.load(open(path))
-          manifest["version"] = os.environ["VERSION"]
-          open(path, "w").write(json.dumps(manifest, indent=2) + "\n")
-          PY
-          (cd extension && zip -r "../shard-extension-$VERSION.zip" manifest.json background.js icons)
+          scripts/package-extension.sh "$VERSION" .
+          mkdir -p build/firefox && (cd build/firefox && unzip -q "../../shard-extension-$VERSION-firefox.zip")
+      - name: Check the Firefox build
+        run: npx --yes web-ext@8 lint --source-dir build/firefox --warnings-as-errors
       - name: Publish to the Chrome Web Store
-        if: github.ref_type == 'tag' && env.REFRESH_TOKEN != ''
-        run: npx --yes chrome-webstore-upload-cli@3 upload --source "shard-extension-$VERSION.zip" --auto-publish
+        if: github.ref_type == 'tag' && vars.CHROME_STORE_ID != '' && env.CWS_REFRESH_TOKEN != ''
+        env:
+          EXTENSION_ID: ${{ vars.CHROME_STORE_ID }}
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+        run: npx --yes chrome-webstore-upload-cli@3 upload --source "shard-extension-$VERSION-chrome.zip" --auto-publish
+      - name: Publish to Edge Add-ons
+        if: github.ref_type == 'tag' && env.EDGE_API_KEY != ''
+        env:
+          EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+          EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+        run: |
+          api="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID/submissions"
+          auth() { curl -fsS -H "Authorization: ApiKey $EDGE_API_KEY" -H "X-ClientID: $EDGE_CLIENT_ID" "$@"; }
+          operation=$(auth -D - -o /dev/null -X POST "$api/draft/package" -H "Content-Type: application/zip" \
+            --data-binary "@shard-extension-$VERSION-chrome.zip" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          for _ in $(seq 30); do
+            status=$(auth "$api/draft/package/operations/$operation" | jq -r .status)
+            [ "$status" = Succeeded ] && break
+            [ "$status" = Failed ] && { echo "::error::Edge Add-ons refused the package"; exit 1; }
+            sleep 10
+          done
+          auth -X POST "$api" -H "Content-Type: application/json" -d "{\"notes\": \"Shard $VERSION\"}"
+      - name: Publish to Firefox Add-ons
+        if: github.ref_type == 'tag' && env.AMO_JWT_ISSUER != ''
+        env:
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          npx --yes web-ext@8 sign --channel listed --source-dir build/firefox \
+            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET" --approval-timeout 0
       - uses: actions/upload-artifact@v4
         with:
           name: extension
@@ -230,8 +296,50 @@ jobs:
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem"
           openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-key.pem" -in update.txt -out update.txt.sig
           rm "$RUNNER_TEMP/update-key.pem"
-      - run: cd dist && sha256sum * > SHA256SUMS
+      - run: cd dist && sha256sum -- * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+
+  packages:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+      BUCKET_DEPLOY_KEY: ${{ secrets.BUCKET_DEPLOY_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write the manifests
+        run: scripts/package-manifests.sh "$VERSION" dist manifests
+      - name: Update the Homebrew tap and the Scoop bucket
+        run: |
+          # push <repository> <deploy key> <folder>: commit that folder of manifests to the repository.
+          push() {
+            [ -n "$2" ] || { echo "No deploy key for $1; skipping it"; return 0; }
+            key="$RUNNER_TEMP/deploy.key"
+            printf '%s\n' "$2" > "$key" && chmod 600 "$key"
+            export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            git clone --depth 1 "git@github.com:$1.git" "$RUNNER_TEMP/repo"
+            mkdir -p "$RUNNER_TEMP/repo/$3"
+            cp manifests/"$3"/* "$RUNNER_TEMP/repo/$3/"
+            (
+              cd "$RUNNER_TEMP/repo"
+              git add "$3"
+              git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -m "shard $VERSION" || echo "Already up to date"
+              git push
+            )
+            rm -rf "$RUNNER_TEMP/repo" "$key"
+          }
+          push manyeya/homebrew-tap "$TAP_DEPLOY_KEY" Casks
+          push manyeya/scoop-bucket "$BUCKET_DEPLOY_KEY" bucket
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests
+          path: manifests/winget

@@ -4,9 +4,11 @@
 mod browser;
 mod db;
 mod engine;
+mod install;
 mod logo;
 mod networks;
 mod queue;
+mod setup;
 mod system;
 mod tray;
 mod ui;
@@ -21,6 +23,9 @@ const USAGE: &str = "usage:
   shard <url>        queue a link (in the Shard that's already open, if there is one)
   shard --hidden     start in the tray, with no window (how launch at login starts it)
   shard serve        run the queue and the browser extension's endpoint without a window
+  shard --setup      install Shard (add --silent for no window)
+  shard --uninstall  remove it (add --silent for no window)
+  shard --version    print the version
   shard get <url> [output]
                    download in the terminal; run it again to resume";
 
@@ -31,7 +36,12 @@ fn main() {
         // SAFETY: plain Win32 call; failing (no parent console) just leaves output unseen.
         unsafe { windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS) };
     }
-    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some((mode, silent)) = install::mode(&args) {
+        std::process::exit(if silent { install::silent(mode) } else { setup::run(mode) });
+    }
+    match args[..] {
+        ["--version"] => println!("shard {}", update::VERSION),
         ["get", url, ref rest @ ..] if rest.len() <= 1 => {
             let rt = tokio::runtime::Runtime::new().expect("start the tokio runtime");
             if let Err(e) = rt.block_on(get(url.to_string(), rest.first().map(PathBuf::from))) {
@@ -127,12 +137,17 @@ fn app(url: Option<&str>, window: Window) {
             let updater = update::Updater::start(manager.clone(), &data, rt.handle());
             ui::run(manager, updater, matches!(window, Window::Hidden));
         }
-        Window::None => rt.block_on(std::future::pending::<()>()),
+        Window::None => rt.block_on(async {
+            let quits = manager.quit_requests();
+            while manager.quit_requests() == quits {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }),
     }
 }
 
 /// Where the database lives; `SHARD_DATA` overrides it.
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("SHARD_DATA") {
         return d.into();
     }

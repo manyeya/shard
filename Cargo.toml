@@ -3,6 +3,14 @@ name = "shard"
 version = "0.1.0"
 edition = "2024"
 description = "A segmented download manager: every file comes down in parallel shards"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/manyeya/shard"
+homepage = "https://manyeya.github.io/shard/"
+readme = "README.md"
+keywords = ["download-manager", "segmented-download", "resume", "gpui", "desktop"]
+categories = ["network-programming", "gui"]
+# An app, not a library: nothing to publish to crates.io.
+publish = false
 
 [dependencies]
 bytes = "1.12.1"
@@ -26,7 +34,7 @@ tokio = { version = "1.53.2", features = ["test-util"] }
 winresource = "0.1.34"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_HiDpi"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = "0.26"
@@ -37,7 +45,7 @@ tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication", "NSScreen"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication", "NSScreen", "NSWorkspace"] }
 
 # `cargo deb` (Linux .deb). Wayland and Vulkan are loaded at run time, so $auto can't see them.
 [package.metadata.deb]
@@ -54,4 +62,28 @@ assets = [
     ["assets/icons/png/shard-128.png", "usr/share/icons/hicolor/128x128/apps/shard.png", "644"],
     ["assets/icons/png/shard-256.png", "usr/share/icons/hicolor/256x256/apps/shard.png", "644"],
     ["assets/icons/png/shard-512.png", "usr/share/icons/hicolor/512x512/apps/shard.png", "644"],
+    ["LICENSE-MIT", "usr/share/doc/shard/", "644"],
+    ["LICENSE-APACHE", "usr/share/doc/shard/", "644"],
 ]
+
+# `cargo generate-rpm` (Fedora, openSUSE and the like). Linked libraries are found by reading the
+# binary; Wayland and Vulkan are loaded at run time, so they're named here.
+[package.metadata.generate-rpm]
+summary = "Segmented download manager: every file in parallel parts"
+auto-req = "builtin"
+assets = [
+    { source = "target/release/shard", dest = "/usr/bin/shard", mode = "755" },
+    { source = "packaging/linux/shard.desktop", dest = "/usr/share/applications/shard.desktop", mode = "644" },
+    { source = "assets/icons/png/shard-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/shard.png", mode = "644" },
+    { source = "assets/icons/png/shard-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/shard.png", mode = "644" },
+    { source = "assets/icons/png/shard-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/shard.png", mode = "644" },
+    { source = "assets/icons/png/shard-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/shard.png", mode = "644" },
+    { source = "assets/icons/png/shard-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/shard.png", mode = "644" },
+    { source = "assets/icons/png/shard-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/shard.png", mode = "644" },
+    { source = "LICENSE-MIT", dest = "/usr/share/licenses/shard/LICENSE-MIT", mode = "644", doc = true },
+    { source = "LICENSE-APACHE", dest = "/usr/share/licenses/shard/LICENSE-APACHE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+libwayland-client = "*"
+vulkan-loader = "*"

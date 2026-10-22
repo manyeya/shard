@@ -22,3 +22,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
   await chrome.downloads.cancel(item.id);
   await chrome.downloads.erase({ id: item.id });
 });
+
+// Shard's setup waits for this to show the extension is in; a running Shard just says hello back.
+chrome.runtime.onInstalled.addListener(() => {
+  fetch(`${APP}/hello`, { method: 'POST' }).catch(() => {});
+});

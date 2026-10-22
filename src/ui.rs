@@ -67,7 +67,7 @@ gpui_kit::assets::icon_assets!(
 );
 
 /// The extra icons first, then gpui-kit's defaults (which the components themselves use).
-struct IdmAssets;
+pub(crate) struct IdmAssets;
 
 impl AssetSource for IdmAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -84,7 +84,7 @@ impl AssetSource for IdmAssets {
     }
 }
 
-const FONTS: [&[u8]; 7] = [
+pub(crate) const FONTS: [&[u8]; 7] = [
     include_bytes!("../assets/fonts/Geist-Regular.ttf"),
     include_bytes!("../assets/fonts/Geist-Medium.ttf"),
     include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
@@ -93,12 +93,12 @@ const FONTS: [&[u8]; 7] = [
     include_bytes!("../assets/fonts/ArchivoExpanded-Bold.ttf"),
     include_bytes!("../assets/fonts/ArchivoExpanded-ExtraBold.ttf"),
 ];
-const SANS: &str = "Geist";
-const MONO: &str = "Geist Mono";
-const DISPLAY: &str = "Archivo Expanded";
+pub(crate) const SANS: &str = "Geist";
+pub(crate) const MONO: &str = "Geist Mono";
+pub(crate) const DISPLAY: &str = "Archivo Expanded";
 
 /// The palette. One accent, used sparingly; near-white for a second series; red only for errors.
-mod ink {
+pub(crate) mod ink {
     use gpui_kit::{Hsla, hsla, rgb};
 
     pub fn bg() -> Hsla {
@@ -238,7 +238,7 @@ fn main_window_options(focus: bool, cx: &mut App) -> WindowOptions {
 }
 
 /// Force the dark theme and retune the components' colours to the palette.
-fn apply_theme(cx: &mut App) {
+pub(crate) fn apply_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     Theme::update(cx, |t| {
         t.font_family = SANS.into();
@@ -2662,7 +2662,7 @@ impl IdmView {
             })
             .filter(|(_, b)| *b > 0)
             .collect();
-        by_cat.sort_by(|a, b| b.1.cmp(&a.1));
+        by_cat.sort_by_key(|c| std::cmp::Reverse(c.1));
         let cat_total: u64 = by_cat.iter().map(|c| c.1).sum();
         let slices: Vec<(f32, Hsla)> = by_cat
             .iter()
@@ -3794,7 +3794,7 @@ fn kbd(text: &'static str) -> impl IntoElement {
         .child(text)
 }
 
-fn glow(color: Hsla, alpha: f32, blur: f32) -> Vec<BoxShadow> {
+pub(crate) fn glow(color: Hsla, alpha: f32, blur: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
         color: color.opacity(alpha),
         offset: point(px(0.), px(0.)),
@@ -4337,7 +4337,7 @@ fn render_empty_state() -> impl IntoElement {
 }
 
 /// An on/off switch, as the Limits panel draws them.
-fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
+pub(crate) fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
     div()
         .id(id)
         .flex_shrink_0()
@@ -4422,6 +4422,7 @@ fn render_command_error(err: SharedString, cx: &Context<IdmView>) -> impl IntoEl
 // ---------------------------------------------------------------------------------------------
 // Painting
 
+#[allow(clippy::too_many_arguments)] // a text run's every part, as paint calls take them
 fn paint_text(
     window: &mut Window,
     cx: &mut App,
@@ -5035,7 +5036,7 @@ fn paint_graph(
     }
 }
 
-fn bezier(c: [(f32, f32); 4], t: f32) -> (f32, f32) {
+pub(crate) fn bezier(c: [(f32, f32); 4], t: f32) -> (f32, f32) {
     let u = 1. - t;
     let (a, b, d) = (u * u * u, 3. * u * u * t, 3. * u * t * t);
     let e = t * t * t;
@@ -5539,6 +5540,7 @@ fn dock(visible: bool, cx: &mut App) {
 /// closing; once a second, the tray's icon and text.
 fn run_shell(mut tray: Option<crate::tray::Tray>, cx: &mut App) {
     let mut shows = cx.global::<Shell>().manager.show_requests();
+    let quits = cx.global::<Shell>().manager.quit_requests();
     let mut drained = cx.global::<Shell>().manager.drained();
     let mut drawn_at: Option<Instant> = None;
     // Statuses at the last look, and the clipboard's link: None until the first look, so nothing
@@ -5554,6 +5556,9 @@ fn run_shell(mut tray: Option<crate::tray::Tray>, cx: &mut App) {
                     tray_event(event, cx);
                 }
                 let manager = cx.global::<Shell>().manager.clone();
+                if manager.quit_requests() != quits {
+                    cx.quit(); // setup is replacing this copy
+                }
                 let asked = manager.show_requests();
                 if asked != shows {
                     shows = asked;

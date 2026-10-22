@@ -1,6 +1,7 @@
 //! The browser extension hands downloads over here, on 127.0.0.1:47110 (see `port`):
 //! `GET /ping` says the app is up, `POST /add` (form fields url, cookie, referrer, useragent) queues one,
-//! and `POST /show` (from a second `shard` launch) brings the window back.
+//! `POST /show` (from a second `shard` launch) brings the window back, `POST /quit` (from setup,
+//! before it replaces this copy) quits, and `POST /hello` is the extension saying it's installed.
 //!
 //! Web pages can send requests to localhost too, so anything carrying an Origin that isn't a
 //! browser extension is refused: a page can't forge its Origin, so it can't start downloads.
@@ -68,6 +69,11 @@ async fn handle(mut stream: TcpStream, m: &Manager) -> std::io::Result<()> {
             m.request_show();
             respond(&mut stream, "200 OK", "shown").await
         }
+        ("POST", "/quit") => {
+            m.request_quit();
+            respond(&mut stream, "200 OK", "quitting").await
+        }
+        ("POST", "/hello") => respond(&mut stream, "200 OK", "hello").await,
         ("POST", "/add") => {
             let form: HashMap<String, String> = url::form_urlencoded::parse(body).into_owned().collect();
             let Some(url) = form.get("url") else {
@@ -117,6 +123,74 @@ pub fn hand_over(url: &str) -> Result<(), String> {
 /// Bring the running Shard's window back.
 pub fn show() -> Result<(), String> {
     ask("POST /show", "").map(drop)
+}
+
+/// Ask the running Shard to quit.
+pub fn quit() -> Result<(), String> {
+    ask("POST /quit", "").map(drop)
+}
+
+/// Setup holds the extension's port while it waits for the extension to say hello: `heard()`
+/// counts the hellos. Anything else gets a 404, so the browser keeps its downloads meanwhile.
+pub struct Hello {
+    heard: Arc<std::sync::atomic::AtomicUsize>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Hello {
+    /// None when the port is taken.
+    pub fn listen() -> Option<Hello> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port())).ok()?;
+        listener.set_nonblocking(true).ok()?;
+        let (heard, stop) = (Arc::new(std::sync::atomic::AtomicUsize::new(0)), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let (h, s) = (heard.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !s.load(Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if answer_hello(stream) {
+                            h.fetch_add(1, Relaxed);
+                        }
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(100)),
+                }
+            }
+        });
+        Some(Hello { heard, stop })
+    }
+
+    pub fn heard(&self) -> usize {
+        self.heard.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for Hello {
+    /// Let go of the port (within a tenth of a second), so the installed Shard can have it.
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Answer one request on setup's listener; true when it was the extension's hello.
+fn answer_hello(mut s: std::net::TcpStream) -> bool {
+    use std::io::{Read, Write};
+    let _ = s.set_nonblocking(false);
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut buf = Vec::new();
+    let mut chunk = [0; 4096];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < MAX_HEAD {
+        match s.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let head = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+    let from_extension = head.lines().any(|l| l.starts_with("origin: chrome-extension://") || l.starts_with("origin: moz-extension://"));
+    let hello = head.starts_with("post /hello ") && from_extension;
+    let (status, body) = if hello { ("200 OK", "hello") } else { ("404 Not Found", "setup is running") };
+    let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    hello
 }
 
 /// One request to the running Shard; Ok is the reply's body when it says 200.

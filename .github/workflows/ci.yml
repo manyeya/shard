@@ -5,6 +5,9 @@ on:
     branches: [main, dev]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -18,7 +21,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
         run: scripts/linux-deps.sh
       - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      # Setup, for real: install into a scratch place, check what landed where, remove it again.
+      - run: cargo build --locked
+      - name: Setup installs and removes Shard (macOS)
+        if: runner.os == 'macOS'
+        run: BIN=target/debug/shard scripts/bundle-macos.sh && scripts/test-setup.sh target/release/Shard.app
+      - name: Setup installs and removes Shard (Linux)
+        if: runner.os == 'Linux'
+        run: scripts/test-setup.sh target/debug/shard
+      - name: Setup installs and removes Shard (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item target/debug/shard.exe Shard-Setup-test.exe
+          scripts/test-setup.ps1 Shard-Setup-test.exe
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package and check the Firefox build
+        run: |
+          scripts/package-extension.sh 0.0.0 build
+          mkdir -p build/firefox && (cd build/firefox && unzip -q ../shard-extension-0.0.0-firefox.zip)
+          npx --yes web-ext@8 lint --source-dir build/firefox --warnings-as-errors
+
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color

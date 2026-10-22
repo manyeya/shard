@@ -223,7 +223,7 @@ fn target() -> Result<PathBuf, String> {
 /// Put `new` where `target` is, keeping the old one beside it as `.old` until the next start (a
 /// running Windows binary can be renamed but not deleted). If moving the new one in fails, the
 /// old one goes back.
-fn swap(target: &Path, new: &Path) -> std::io::Result<()> {
+pub fn swap(target: &Path, new: &Path) -> std::io::Result<()> {
     let old = sibling(target, ".old");
     remove_any(&old);
     std::fs::rename(target, &old)?;
@@ -243,7 +243,7 @@ pub fn clean_up() {
     }
 }
 
-fn remove_any(path: &Path) {
+pub fn remove_any(path: &Path) {
     let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
 }
 

@@ -72,7 +72,12 @@ pub fn launch_at_login() -> bool {
 
 pub fn set_launch_at_login(on: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    set_login(&home(), xdg_config(), &exe, on)
+    set_launch_at_login_for(&home(), &exe, on)
+}
+
+/// Start the Shard at `exe` at login, or don't: setup uses it for the copy it installs.
+pub fn set_launch_at_login_for(home: &Path, exe: &Path, on: bool) -> Result<(), String> {
+    set_login(home, xdg_config(), exe, on)
 }
 
 fn xdg_config() -> Option<PathBuf> {
@@ -145,7 +150,7 @@ fn xml_escape(s: &str) -> String {
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
 #[cfg(windows)]
-fn reg(args: &[&str]) -> bool {
+pub fn reg(args: &[&str]) -> bool {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000; // no console flashing up from a windowed app
     std::process::Command::new("reg")

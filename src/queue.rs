@@ -198,6 +198,7 @@ pub struct Manager {
     awake: crate::system::Awake,
     /// Asks from another `shard` launch to show the window; the UI watches it change.
     shows: std::sync::atomic::AtomicU64,
+    quits: std::sync::atomic::AtomicU64,
     /// Goes up each time the queue finishes (the last download done, nothing waiting).
     drained: std::sync::atomic::AtomicU64,
     inner: Mutex<Inner>,
@@ -345,6 +346,7 @@ impl Manager {
             net,
             awake: crate::system::Awake::new(),
             shows: Default::default(),
+            quits: Default::default(),
             drained: Default::default(),
             inner: Mutex::new(Inner {
                 db,
@@ -606,6 +608,16 @@ impl Manager {
     /// Goes up by one per `request_show`; the UI shows the window when it changes.
     pub fn show_requests(&self) -> u64 {
         self.shows.load(Relaxed)
+    }
+
+    /// Ask Shard to quit (setup is about to replace it).
+    pub fn request_quit(&self) {
+        self.quits.fetch_add(1, Relaxed);
+    }
+
+    /// Goes up by one per `request_quit`; the UI quits when it changes.
+    pub fn quit_requests(&self) -> u64 {
+        self.quits.load(Relaxed)
     }
 
     /// Err is a message for the user (for example a folder that can't be created).
