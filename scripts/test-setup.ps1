@@ -36,3 +36,4 @@ if (Test-Path $menu) { throw "the Start menu shortcut is still there" }
 if (Has-Key $uninstall $null) { throw "the entry in Settings > Apps is still there" }
 if (Has-Key $run "Shard") { throw "the login entry is still there" }
 Write-Output "ok: setup installed Shard, installed it again over the top, and removed it"
+exit 0 # not the last `reg query`'s code, which is 1 when the key is gone, as it should be
