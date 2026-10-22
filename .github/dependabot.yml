@@ -1,0 +1,29 @@
+# Weekly dependency updates, as pull requests against dev (main only ever moves by fast-forward).
+# Minor and patch updates come grouped in one pull request per ecosystem; major updates come one
+# by one, since they're the ones that need reading.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "Dependencies"
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "CI"
+    groups:
+      actions:
+        patterns: ["*"]

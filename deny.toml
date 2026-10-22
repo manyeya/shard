@@ -1,0 +1,65 @@
+# cargo-deny's checks, run by .github/workflows/audit.yml: `cargo deny check`.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# The platforms Shard is released for. Crates only used elsewhere (wasm, Android, iOS) aren't
+# shipped, so they aren't checked.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
+[advisories]
+# The RustSec advisory database (the default).
+ignore = []
+yanked = "warn"
+# Fail on unmaintained crates Shard depends on directly. Ones deeper in the tree (mostly GPUI's)
+# don't fail the check, since only their maintainers can replace them.
+unmaintained = "workspace"
+
+[licenses]
+# Every licence used by a dependency on the targets above that isn't satisfied by MIT or
+# Apache-2.0 alone. An expression with OR passes when any one side is allowed, so crates offering
+# "MIT OR Apache-2.0 OR LGPL-2.1-or-later" or "Apache-2.0 OR GPL-2.0-only" pass through MIT or
+# Apache-2.0 without a copyleft licence being allowed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # target-lexicon
+    "BSD-2-Clause",                   # arrayref, rav1e, av1-grain, v_frame
+    "BSD-3-Clause",                   # ed25519-dalek, curve25519-dalek, subtle, tiny-skia and others; part of aws-lc-sys and encoding_rs
+    "ISC",                            # libloading, rustls-webpki, untrusted, inotify; part of ring and aws-lc-rs
+    "Zlib",                           # foldhash, slotmap, zlib-rs
+    "Unicode-3.0",                    # the ICU4X crates (icu_*, zerovec, tinystr…); part of unicode-ident
+    "MPL-2.0",                        # option-ext, cbindgen (file-level copyleft; used unmodified)
+    "CC0-1.0",                        # hexf-parse, notify, tiny-keccak
+    "0BSD",                           # enum-iterator
+    "Unlicense",                      # ksni, the Linux tray's StatusNotifierItem backend
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+# Skip licence checks for workspace crates that aren't published. This only applies to crates
+# with `publish = false` in their Cargo.toml.
+ignore = true
+
+[bans]
+# Several versions of one crate (common with GPUI's dependency tree) are worth knowing about,
+# not worth failing over.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Everything comes from crates.io; Cargo.lock has no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,29 @@
+# Text files are stored and checked out with LF line endings on every system, so the shell
+# scripts keep working when the repository is cloned on Windows.
+* text=auto eol=lf
+
+*.rs text eol=lf
+*.toml text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.svg text eol=lf
+*.md text eol=lf
+*.desktop text eol=lf
+
+*.ttf binary
+*.png binary
+*.icns binary
+*.ico binary
+
+# Third-party fonts: left out of GitHub's language statistics.
+assets/fonts/** linguist-vendored
+site/fonts/** linguist-vendored
+
+# Generated: collapsed in GitHub's diffs. src/logo.rs is written by scripts/logo.py.
+Cargo.lock linguist-generated
+src/logo.rs linguist-generated

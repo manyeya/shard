@@ -1,0 +1,41 @@
+# CodeQL code scanning: the Rust code, and the workflows themselves (actions). Results appear
+# under the repository's Security › Code scanning.
+name: CodeQL
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Neither needs a build: CodeQL reads the Rust sources directly (Rust only supports
+        # build-mode none) and the workflow files as they are.
+        language: [actions, rust]
+    steps:
+      - uses: actions/checkout@v4
+      # Edition 2024 needs cargo 1.85 or later to read Cargo.toml; make sure CodeQL finds one.
+      - if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

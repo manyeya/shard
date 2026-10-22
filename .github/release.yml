@@ -1,0 +1,32 @@
+# Sections for GitHub's generated release notes, which the Release workflow publishes
+# (generate_release_notes). Pull requests land in the first section whose label they carry.
+# Label wildcards aren't supported here, so each platform label is listed.
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+    - title: Features
+      labels:
+        - enhancement
+        - feature
+    - title: Fixes
+      labels:
+        - bug
+    - title: Platform
+      labels:
+        - platform:macos
+        - platform:windows
+        - platform:linux
+    - title: Docs
+      labels:
+        - documentation
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Other
+      labels:
+        - "*"

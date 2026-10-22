@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest something Shard should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. The README's "Not yet" list has what's already known to be missing (torrents, downloads a page starts with a POST, Firefox); add to an existing issue rather than opening a new one if yours is there.
+
+        Not sure it's a feature yet? Start a [discussion](https://github.com/manyeya/shard/discussions) instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+      placeholder: "When I download from …, I have to …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: How Shard could solve it. Describe what you'd see and do, not how to code it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Other ways around it, in Shard or with other tools.
+
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Which systems does it matter on?
+      multiple: true
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - The browser extension
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Screenshots, examples of other apps doing it, links to specs.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and discussions for this idea.
+          required: true
+        - label: I'd be willing to help build or test it.
+          required: false

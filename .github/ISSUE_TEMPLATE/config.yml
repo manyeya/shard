@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/manyeya/shard/discussions/categories/q-a
+    about: Ask how to do something, or whether Shard can, in Discussions.
+  - name: Report a security problem
+    url: https://github.com/manyeya/shard/security/advisories/new
+    about: Report vulnerabilities privately, not in a public issue. See SECURITY.md.
+  - name: Website
+    url: https://manyeya.github.io/shard/
+    about: Downloads, features and answers to common questions.

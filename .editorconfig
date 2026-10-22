@@ -1,0 +1,29 @@
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{rs,toml,py}]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json,js,html,css,svg}]
+indent_style = space
+indent_size = 2
+
+# The shell scripts indent with tabs.
+[*.sh]
+indent_style = tab
+
+[*.md]
+# Two trailing spaces are a line break in Markdown.
+trim_trailing_whitespace = false
+
+# The fonts' licence texts are kept exactly as their authors wrote them.
+[OFL-*.txt]
+trim_trailing_whitespace = false
+insert_final_newline = unset

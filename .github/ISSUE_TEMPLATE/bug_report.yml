@@ -1,0 +1,132 @@
+name: Bug report
+description: Something in Shard doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please check [the troubleshooting guide](https://github.com/manyeya/shard/blob/main/docs/TROUBLESHOOTING.md) first.
+
+        **A security problem?** Don't report it here. Use [a private security advisory](https://github.com/manyeya/shard/security/advisories/new) instead.
+
+        **Never paste a private or signed download link**, cookies or tokens. Describe the kind of link instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: Shard version
+      description: Shown on the update line in the Limits panel (⌘, on macOS, Ctrl+, elsewhere), or by `shard --version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: Operating system version
+      description: For Linux, include the distribution, desktop and whether it's Wayland or X11.
+      placeholder: "macOS 15.1 on Apple silicon / Windows 11 24H2 / Ubuntu 24.04, GNOME, Wayland"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install Shard?
+      options:
+        - Disk image (DMG)
+        - Homebrew
+        - Setup .exe
+        - Scoop
+        - Portable zip (Windows)
+        - .deb package
+        - .rpm package
+        - AppImage
+        - tar.gz
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: extension
+    attributes:
+      label: Is the browser extension involved?
+      description: Did the download come from the browser through the Shard extension?
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      description: Only if the extension is involved.
+      placeholder: "Chrome 130, Edge 130, Brave 1.71, Arc…"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including any message on the download's card or in the Limits panel.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Copy a link to …
+        2. Paste it into Shard
+        3. Pause it at about half way, then quit Shard
+        4. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: link
+    attributes:
+      label: What kind of link
+      description: |
+        Describe the link, don't paste it if it's private, signed or carries a token. For example: "a signed S3 link that expires after an hour", "a file behind a login on a forum", "a public ISO from a university mirror". Public links to public files are fine.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal output
+      description: |
+        Shard writes its errors to the terminal it was started from. [Here's how to start it from one](https://github.com/manyeya/shard/blob/main/docs/TROUBLESHOOTING.md#where-errors-go). Remove any cookies, tokens or private links before pasting.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and this hasn't been reported.
+          required: true
+        - label: I'm on the latest release (or I've said above that I'm not, and why).
+          required: true

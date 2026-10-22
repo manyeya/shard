@@ -1,0 +1,38 @@
+# Checks the dependencies against deny.toml with cargo-deny: known vulnerabilities (RustSec),
+# licences, banned or duplicate crates, and where crates come from.
+name: Audit
+
+on:
+  push:
+    branches: [main, dev]
+    paths: ["Cargo.toml", "Cargo.lock", "deny.toml", ".github/workflows/audit.yml"]
+  pull_request:
+  schedule:
+    # Mondays: new advisories are published all the time, whether or not the code changed.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    # A newly published advisory shouldn't block an unrelated change; the weekly run is the one
+    # that fails, so it gets noticed.
+    continue-on-error: ${{ github.event_name != 'schedule' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  policy:
+    # Licences, bans and sources only change when the code does.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
