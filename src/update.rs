@@ -210,6 +210,10 @@ fn target() -> Result<PathBuf, String> {
             .ok_or("Updates install into Shard.app, and this copy isn't one.")?
     } else if cfg!(target_os = "linux") && exe.starts_with("/usr") {
         return Err("Installed by a package manager: update Shard through it.".into());
+    } else if exe.to_string_lossy().to_lowercase().contains(r"\scoop\apps\") {
+        return Err("Installed with Scoop: update it with scoop update shard.".into());
+    } else if std::env::var_os("APPIMAGE").is_some() {
+        return Err("Running from the AppImage: install it (open the AppImage and choose Install) to get updates.".into());
     } else {
         exe
     };

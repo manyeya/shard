@@ -56,7 +56,7 @@ anyway. Every file in a release is listed with its SHA-256 in `SHA256SUMS`;
 Open Shard from the disk image, run `Shard-Setup.exe`, or open the AppImage, and setup runs in
 Shard's own window. It puts Shard where your system keeps apps, can start it at login, closes a
 running copy first and swaps the new one in beside it, then walks you through adding the browser
-extension. `--silent` does the same with no window (what Scoop and winget use), and
+extension. `--silent` does the same with no window (what winget uses), and
 `shard --uninstall` takes it all out again.
 
 | | macOS | Windows | Linux |

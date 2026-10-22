@@ -2,7 +2,8 @@
 
 How Shard is put together: the threads it runs, how a link becomes a file on disk, how the queue
 schedules downloads, how the browser extension and a second launch talk to it, how updates are
-checked and installed, and where everything is stored. File and function names refer to `src/`.
+checked and installed, how setup installs it, and where everything is stored. File and function
+names refer to `src/`.
 
 ## Contents
 
@@ -31,9 +32,15 @@ Everything is one executable, `shard`. `main.rs` picks what to do from the argum
 | `shard --hidden` | The same without the window: just the tray (what launch at login runs). |
 | `shard serve` | The queue and the browser endpoint, with no window, no tray and no updater. |
 | `shard get <url> [output]` | One download in the terminal, with no queue, database or endpoint. Running it again resumes. |
+| `shard --setup` | The setup window, installing this copy (see [Setup](#setup)). |
+| `shard --uninstall` | The setup window, removing the installed Shard. |
+| `--silent`, with either | The same steps with the defaults and no window, reported on stdout; the exit code says how it went. |
+| `shard --version` | Prints `shard X.Y.Z`. |
 
-The installer adds `--setup`, `--uninstall`, `--silent` and `--version`, and a copy that isn't
-installed offers setup when opened with no arguments (see [Setup](#setup)).
+Before any of those, `install::mode` decides whether this launch is setup: `--setup` and
+`--uninstall` ask for it, and a copy that isn't installed offers it when it's opened with no
+arguments (or only `--silent`). Setup runs instead of the app: no queue, endpoint, tray or
+updater.
 
 Only one Shard runs per user. The browser endpoint's port (`127.0.0.1:47110`, or `SHARD_PORT`)
 doubles as the lock: `app()` tries to bind it, and if that fails and `GET /ping` answers
@@ -312,9 +319,12 @@ it). Every response is `text/plain` with `Connection: close`.
 | `GET /ping` | | `200 shard`. How a second launch, and the extension test, tell that Shard is up. |
 | `POST /add` | Form-encoded `url`, and optionally `cookie`, `referrer`, `useragent` | `200 queued`, or `400` with the reason ("no url", "Only http and https links can be downloaded."). |
 | `POST /show` | | `200 shown`; the window comes forward. Sent by a second `shard` launch. |
-| `POST /hello` | | `200 hello`. Added with the installer: the extension sends it when it's installed. |
-| `POST /quit` | | `200 quitting`; Shard quits. Added with the installer: setup sends it before replacing a running Shard. |
+| `POST /hello` | | `200 hello`. The extension sends it, empty, when it's installed or updated; a running Shard only answers it, and setup counts it (see [Setup](#setup)). |
+| `POST /quit` | | `200 quitting`; Shard quits. Setup sends it before replacing or removing a running Shard. |
 | anything else | | `404 not found` |
+
+The client side, used by a second launch and by setup, is in the same file: `running()` (does
+`GET /ping` answer `shard`?), `hand_over()`, `show()` and `quit()`.
 
 Before routing, any request with an `Origin` header that doesn't start with `chrome-extension://`
 or `moz-extension://` is refused with `403`. Headers are limited to 16 KiB and the body to
@@ -325,7 +335,14 @@ request for that download.
 The extension (`extension/background.js`) listens to `chrome.downloads.onCreated`. For an
 `http(s)` download in progress, it reads the cookies for the URL, posts them to `/add`, and on a
 `200` cancels and erases the browser's own download. Any failure (Shard not running, a refusal)
-leaves the download with the browser.
+leaves the download with the browser. From `chrome.runtime.onInstalled` it posts an empty
+`/hello`. The address `http://127.0.0.1:47110` is written into the script, so it never follows
+`SHARD_PORT`.
+
+The same script runs everywhere. `scripts/package-extension.sh` packages it twice: for Chromium
+browsers as a Manifest V3 service worker, and for Firefox (128 or later) as an event page with
+the add-on ID `shard-integration@manyeya.github.io`. People install it from the Chrome Web
+Store, Edge Add-ons or Firefox Add-ons.
 
 ## The UI
 
@@ -421,34 +438,99 @@ binary that isn't in one can't update itself); on Linux, nothing under `/usr` (p
 installs update through their package manager); elsewhere, the running binary. In every case the
 folder must be writable, which `target()` tests by creating and deleting `.shard-update-check`
 there. The old copy is kept beside the new one as `.old` until the next start, because a running
-Windows binary can be renamed but not deleted.
+Windows binary can be renamed but not deleted. An AppImage that's run without installing can't
+update itself: its binary is in the AppImage's read-only mount.
 
 ## Setup
 
-Added with the installer (`install.rs`, with the window in `setup.rs`). The setup window runs a
-list of steps one at a time and draws them; `--silent` runs the same steps with the defaults and
-prints them.
+`install.rs` knows where Shard goes on each system and makes the steps (`Task`s: a label, a
+detail, and work that reports progress from 0 to 1) that put it there and take it out again.
+`setup.rs` is the window that runs them one at a time on a worker thread and draws them.
+`--silent` runs the same steps with the defaults (start at login on, no desktop shortcut, no
+extension step, history kept when removing), printing each label, and exits non-zero if one
+fails.
 
-- A copy offers setup when opened with no arguments if its file name contains "setup"; or, on
-  macOS, if it's a `Shard.app` outside any `Applications` folder; or, on Linux, if it isn't under
-  `/usr`, `/opt`, `/nix`, `/snap` or `~/.local/bin` and the person hasn't chosen "Run without
-  installing" before. Builds under a `target` folder and the Windows portable zip don't offer it.
-  `SHARD_NO_SETUP=1` turns the offer off.
-- Installing closes a running Shard first (`POST /quit`, then waits for the port to be free),
-  copies the app beside the old one and swaps them, adds shortcuts and the Settings › Apps entry
-  (Windows) or a desktop entry and icons (Linux), and sets launch at login.
-- The extension step opens Shard's listing in each browser setup finds, in that browser's store
-  (Chrome Web Store, Edge Add-ons, Firefox Add-ons; Chromium browsers without a store of their own
-  use the Chrome Web Store). A store is offered only when Shard's ID for it is known: built in
-  from `SHARD_CHROME_STORE_ID`, `SHARD_EDGE_STORE_ID` or `SHARD_FIREFOX_STORE_SLUG` at compile
-  time, or read from the same variables at run time. Meanwhile setup holds the endpoint's port
-  itself (`browser::Hello`) and counts `POST /hello` requests carrying an extension `Origin`; the
-  extension sends one from `chrome.runtime.onInstalled`. Everything else gets a 404 while setup
-  listens, so the browser keeps its downloads.
-- `SHARD_INSTALL_DIR` replaces the default folder: `/Applications` (or `~/Applications` when that
-  isn't writable) on macOS, `%LOCALAPPDATA%\Programs\Shard` on Windows, `~/.local/bin` on Linux.
-- Uninstalling reverses those steps, and deletes the data folder too if asked to forget the
-  history and settings.
+### When setup runs
+
+`--setup` and `--uninstall` always run it. Otherwise a copy opened with no arguments offers it
+when its file name contains "setup" (the Windows `Shard-Setup-….exe`); on macOS, when it's a
+`Shard.app` outside any `Applications` folder (opened from the disk image or Downloads); on Linux,
+when it isn't under `/usr`, `/opt`, `/nix`, `/snap` or `~/.local/bin` and nobody has chosen "Run
+without installing" there before (that leaves a `run-in-place` file in the data folder). Builds
+under a `target` folder and the Windows portable zip never offer it, and `SHARD_NO_SETUP` (set to
+anything) turns the offer off. Setup sets it itself when it starts Shard afterwards.
+
+### Where it installs
+
+| System | The app | Also |
+| --- | --- | --- |
+| macOS | `/Applications/Shard.app`, or `~/Applications/Shard.app` when `/Applications` isn't writable | The login entry, if chosen |
+| Windows | `%LOCALAPPDATA%\Programs\Shard\Shard.exe` | `Shard.lnk` in the Start menu (and on the desktop, if chosen); the Settings › Apps entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Shard`; the login entry, if chosen. No administrator rights are needed. |
+| Linux | `~/.local/bin/shard` | `shard.desktop` in `$XDG_DATA_HOME/applications` (else `~/.local/share/applications`), with `Exec` set to the installed binary; the icon at 32 to 512 px under `icons/hicolor` beside it; the login entry, if chosen |
+
+`SHARD_INSTALL_DIR` replaces the folder the app goes in.
+
+### Installing
+
+The steps, in order:
+
+1. **Closing Shard**, if one answers on the port: `POST /quit`, then wait (up to 15 seconds) until
+   `GET /ping` stops answering.
+2. **Copying Shard**, unless this copy is the installed one: copied in beside the old one as
+   `.new` (with `ditto` on macOS, which then removes the quarantine attribute, so the installed
+   copy can update itself), then swapped in the way updates are, so a failed copy leaves the old
+   one working. On macOS only a `Shard.app` installs: run from a bare binary, setup stops with an
+   error before the first step.
+3. On Windows, **adding shortcuts** (made with the shell's `WScript.Shell` object through
+   PowerShell) and **adding to Settings › Apps**: the display name, version, publisher "The Shard
+   Authors", icon, size, and `UninstallString` and `QuietUninstallString`, which run
+   `Shard.exe --uninstall` with and without `--silent`.
+4. On Linux, **adding to your apps**: the desktop entry and icons, then `update-desktop-database`
+   and `gtk-update-icon-cache` if they're there.
+5. **Starting at login**, or turning it off.
+
+### The window
+
+The window has four scenes: the choices, the steps running, the browser extension, and done (or
+"Setup stopped" with the error and Try again). The first scene's title says Install, Update to
+X.Y.Z or Reinstall, from the version the installed copy reports with `--version`. Its options
+are the install folder, start at login, a desktop shortcut (Windows), and the browser extension,
+with a chip for each browser it can send to a store; "Run without installing" starts this copy as
+it is instead.
+Removing has one option, to delete the history and settings (the data folder) as well.
+
+`SHARD_SETUP_DEMO` (set to anything) runs the window with steps that only pretend.
+`SHARD_REDUCE_MOTION=1`, or the system's reduce-motion setting, keeps it still.
+
+### The extension step
+
+`install::browsers()` looks for browsers: app bundles in `/Applications` and `~/Applications` on
+macOS, known paths under `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%LOCALAPPDATA%` on Windows,
+and commands on `PATH` on Linux. Each has a store: Chrome, Arc, Brave, Vivaldi, Opera and Chromium
+use the Chrome Web Store; Edge uses Edge Add-ons, or the Chrome Web Store while Shard has no Edge
+listing; Firefox uses Firefox Add-ons. A store's link is built from Shard's ID there, compiled in
+from `SHARD_CHROME_STORE_ID`, `SHARD_EDGE_STORE_ID` or `SHARD_FIREFOX_STORE_SLUG`, or read from
+the same variables at run time. Only browsers whose store has an ID are listed, and with none
+there's no extension step.
+
+For each browser picked, setup opens Shard's page in that store in that browser (`open -a` on
+macOS, the browser's binary elsewhere), shows which buttons to press, and waits for the extension
+to say hello. While the step is up, setup holds the endpoint's port itself (`browser::Hello`). It
+answers a `POST /hello` carrying a `chrome-extension://` or `moz-extension://` `Origin` with
+`200` and counts it; everything else gets `404 setup is running`, so the extension's `/add`
+fails and the browser keeps its downloads meanwhile. A hello marks the current browser as
+connected and moves on to the next. If the port is taken, setup can't listen: it says it can't
+hear the browser, and the person moves on by hand. Choosing Open Shard at the end lets go of the
+port before starting the installed copy.
+
+### Removing
+
+The steps: closing a running Shard, turning off start at login, on Windows removing the shortcuts
+and the Settings › Apps entry (and the notification registration under
+`HKCU\Software\Classes\AppUserModelId\dev.shard.app`), on Linux removing the desktop entry and
+icons, deleting the data folder if asked, and removing the app. A running Windows program can't
+delete itself, so there a hidden `cmd` waits a couple of seconds for Shard to exit, then deletes
+`Shard.exe`, `Shard.exe.old` and the folder if it's empty.
 
 ## Persistence
 
@@ -517,3 +599,5 @@ holds the cookies browser downloads need.
 | A download in progress | `<file>.part` and `<file>.resume` in the download's folder (`<file>.resume.tmp` while a checkpoint is written) |
 | The previous version after an update | `Shard.app.old`, `Shard.exe.old` or `shard.old` beside the app, until the next start |
 | Launch at login | `~/Library/LaunchAgents/dev.shard.app.plist` (macOS), `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `Shard` (Windows), `$XDG_CONFIG_HOME/autostart/shard.desktop` or `~/.config/autostart/shard.desktop` (Linux) |
+| "Run without installing" chosen (Linux) | `<data>/run-in-place` |
+| The installed app, shortcuts and entries | See [where it installs](#where-it-installs) |

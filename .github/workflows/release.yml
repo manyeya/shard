@@ -1,6 +1,7 @@
 # Push a tag vX.Y.Z (matching Cargo.toml's version) to build every platform and publish a GitHub
-# release with checksums, then update the Homebrew tap and the Scoop bucket and send the extension
-# to the browser stores. Run it by hand (workflow_dispatch) to build the packages without releasing.
+# release with checksums. Once that's out, the Homebrew tap and the Scoop bucket are updated and
+# the extension goes to each browser store, each on its own, so one failing doesn't hold back the
+# rest. Run it by hand (workflow_dispatch) to build the packages without releasing.
 #
 # Required for a release: UPDATE_SIGNING_KEY, the Ed25519 private key (PEM) that signs update.txt,
 # which installed copies check before updating themselves.
@@ -10,7 +11,8 @@
 #     MACOS_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
 #   Homebrew and Scoop: TAP_DEPLOY_KEY, BUCKET_DEPLOY_KEY (SSH keys allowed to push to
 #     manyeya/homebrew-tap and manyeya/scoop-bucket)
-#   Chrome Web Store: CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN
+#   Chrome Web Store: CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN, and the variable
+#     CWS_PUBLISHER_ID
 #   Edge Add-ons: EDGE_PRODUCT_ID, EDGE_CLIENT_ID, EDGE_API_KEY
 #   Firefox Add-ons: AMO_JWT_ISSUER, AMO_JWT_SECRET
 # Repository variables (not secrets; they're public): CHROME_STORE_ID, EDGE_STORE_ID and
@@ -217,10 +219,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      # Here rather than on the steps, so each step's `if` can see whether they're set.
-      CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
-      EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
-      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
     steps:
       - uses: actions/checkout@v4
       - name: Package for Chrome, Edge and Firefox
@@ -229,38 +227,6 @@ jobs:
           mkdir -p build/firefox && (cd build/firefox && unzip -q "../../shard-extension-$VERSION-firefox.zip")
       - name: Check the Firefox build
         run: npx --yes web-ext@8 lint --source-dir build/firefox --warnings-as-errors
-      - name: Publish to the Chrome Web Store
-        if: github.ref_type == 'tag' && vars.CHROME_STORE_ID != '' && env.CWS_REFRESH_TOKEN != ''
-        env:
-          EXTENSION_ID: ${{ vars.CHROME_STORE_ID }}
-          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
-          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
-        run: npx --yes chrome-webstore-upload-cli@3 upload --source "shard-extension-$VERSION-chrome.zip" --auto-publish
-      - name: Publish to Edge Add-ons
-        if: github.ref_type == 'tag' && env.EDGE_API_KEY != ''
-        env:
-          EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
-          EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
-        run: |
-          api="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID/submissions"
-          auth() { curl -fsS -H "Authorization: ApiKey $EDGE_API_KEY" -H "X-ClientID: $EDGE_CLIENT_ID" "$@"; }
-          operation=$(auth -D - -o /dev/null -X POST "$api/draft/package" -H "Content-Type: application/zip" \
-            --data-binary "@shard-extension-$VERSION-chrome.zip" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
-          for _ in $(seq 30); do
-            status=$(auth "$api/draft/package/operations/$operation" | jq -r .status)
-            [ "$status" = Succeeded ] && break
-            [ "$status" = Failed ] && { echo "::error::Edge Add-ons refused the package"; exit 1; }
-            sleep 10
-          done
-          auth -X POST "$api" -H "Content-Type: application/json" -d "{\"notes\": \"Shard $VERSION\"}"
-      - name: Publish to Firefox Add-ons
-        if: github.ref_type == 'tag' && env.AMO_JWT_ISSUER != ''
-        env:
-          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
-        run: |
-          npx --yes web-ext@8 sign --channel listed --source-dir build/firefox \
-            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET" --approval-timeout 0
       - uses: actions/upload-artifact@v4
         with:
           name: extension
@@ -282,7 +248,7 @@ jobs:
       - name: Release notes, from this version's section of CHANGELOG.md
         run: |
           awk -v v="$VERSION" 'index($0, "## [" v "]") == 1 {on = 1; next} on && /^## \[/ {exit} on' CHANGELOG.md > release-notes.md
-          [ -s release-notes.md ] || echo "See [CHANGELOG.md](CHANGELOG.md)." > release-notes.md
+          [ -s release-notes.md ] || echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)." > release-notes.md
           cat release-notes.md
       - name: Signed update manifest
         working-directory: dist
@@ -316,6 +282,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
       BUCKET_DEPLOY_KEY: ${{ secrets.BUCKET_DEPLOY_KEY }}
+      # The cask only warns about Gatekeeper when the disk image wasn't notarised.
+      NOTARISED: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -350,3 +318,85 @@ jobs:
         with:
           name: winget-manifests
           path: manifests/winget
+
+  # The extension, to each store whose credentials are set. After the release, so a store that's
+  # down or refuses the update can't hold it back; re-running one fails if that store already has
+  # this version.
+  chrome-web-store:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      EXTENSION_ID: ${{ vars.CHROME_STORE_ID }}
+      PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+      CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: env.EXTENSION_ID != '' && env.PUBLISHER_ID != '' && env.REFRESH_TOKEN != ''
+        with:
+          name: extension
+      - name: Upload and submit for review
+        if: env.EXTENSION_ID != '' && env.PUBLISHER_ID != '' && env.REFRESH_TOKEN != ''
+        run: npx --yes chrome-webstore-upload-cli@4.0.2 --source "shard-extension-$VERSION-chrome.zip"
+
+  edge-add-ons:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+      EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+      EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: env.EDGE_API_KEY != ''
+        with:
+          name: extension
+      - name: Upload and submit for review
+        if: env.EDGE_API_KEY != ''
+        run: |
+          api="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID/submissions"
+          auth() { curl -fsS -H "Authorization: ApiKey $EDGE_API_KEY" -H "X-ClientID: $EDGE_CLIENT_ID" "$@"; }
+          # The operation a 202's Location header names.
+          operation() { tr -d '\r' | sed -n 's|^[Ll]ocation: .*/||p; s|^[Ll]ocation: ||p' | head -1; }
+          # wait <url>: poll an operation until it succeeds; fail if it fails or takes ten minutes.
+          wait() {
+            for _ in $(seq 60); do
+              reply=$(auth "$1")
+              case $(echo "$reply" | jq -r .status) in
+                Succeeded) return 0 ;;
+                Failed) echo "::error::Edge Add-ons: $(echo "$reply" | jq -c '{message, errors}')"; return 1 ;;
+              esac
+              sleep 10
+            done
+            echo "::error::Edge Add-ons was still working after ten minutes"; return 1
+          }
+          upload=$(auth -D - -o /dev/null -X POST "$api/draft/package" -H "Content-Type: application/zip" \
+            --data-binary "@shard-extension-$VERSION-chrome.zip" | operation)
+          [ -n "$upload" ] || { echo "::error::Edge Add-ons didn't accept the upload"; exit 1; }
+          wait "$api/draft/package/operations/$upload"
+          publish=$(auth -D - -o /dev/null -X POST "$api" -H "Content-Type: application/json" \
+            -d "{\"notes\": \"Shard $VERSION\"}" | operation)
+          [ -n "$publish" ] || { echo "::error::Edge Add-ons didn't accept the submission"; exit 1; }
+          wait "$api/operations/$publish"
+
+  firefox-add-ons:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: env.AMO_JWT_ISSUER != ''
+        with:
+          name: extension
+      - name: Submit the new version for review
+        if: env.AMO_JWT_ISSUER != ''
+        run: |
+          mkdir -p firefox && (cd firefox && unzip -q "../shard-extension-$VERSION-firefox.zip")
+          npx --yes web-ext@8 sign --channel listed --source-dir firefox \
+            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET" --approval-timeout 0

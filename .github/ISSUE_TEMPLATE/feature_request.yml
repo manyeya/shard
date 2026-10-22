@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the idea. The README's "Not yet" list has what's already known to be missing (torrents, downloads a page starts with a POST, Firefox); add to an existing issue rather than opening a new one if yours is there.
+        Thanks for the idea. The README's "Not yet" list has what's already known to be missing (torrents, and downloads a page starts with a POST); add to an existing issue rather than opening a new one if yours is there.
 
         Not sure it's a feature yet? Start a [discussion](https://github.com/manyeya/shard/discussions) instead.
 

@@ -45,26 +45,27 @@ boundaries are, so you can tell a vulnerability from expected behaviour.
 
 ### The local endpoint
 
-Shard listens on `127.0.0.1:47110` (`SHARD_PORT` moves it) for the browser extension and for a
-second `shard` launch. It answers `GET /ping`, `POST /add` (queue a URL with cookie, referrer
-and user agent) and `POST /show` (bring the window back). The installer adds `POST /hello` (the
-extension announcing itself, so setup can confirm it's connected) and `POST /quit` (setup asking
-a running Shard to quit before replacing it).
+Shard listens on `127.0.0.1:47110` (`SHARD_PORT` moves it) for the browser extension, a second
+`shard` launch and setup. It answers `GET /ping`, `POST /add` (queue a URL with cookie, referrer
+and user agent), `POST /show` (bring the window back), `POST /hello` (the extension announcing
+itself when it's installed or updated; Shard only answers it) and `POST /quit` (setup asking a
+running Shard to quit before replacing or removing it).
 
 - It binds the loopback address only, so other machines can't reach it.
 - Any request carrying an `Origin` header that isn't a browser extension's
   (`chrome-extension://…` or `moz-extension://…`) is refused with 403. Browsers set `Origin` on
   the cross-site requests a web page can make, and a page can't forge it, so a web page can't
-  queue downloads or show the window.
+  queue downloads, show the window or make Shard quit.
 - Everything that changes state is a POST, because a page can make a GET without an `Origin`
   (an `<img>`, for example). A page may still be able to tell that something answers on the
   port, through `GET /ping`.
 - Requests without an `Origin` are accepted. That's how a second `shard` launch hands over a
   link. It also means any program running as you on the same computer can add downloads, bring
-  the window forward or (with the installer's `POST /quit`) make Shard quit; local programs
-  already have that much access to your account, so this is outside the threat model.
+  the window forward or make Shard quit; local programs already have that much access to your
+  account, so this is outside the threat model.
 - While setup waits for the extension, setup itself holds the port and answers only a
-  `POST /hello` carrying an extension `Origin`; everything else gets a 404.
+  `POST /hello` carrying an extension `Origin`; everything else gets a 404. A hello from any
+  extension counts, but all it does is mark a browser as connected in setup's window.
 - Any browser extension can call it, not only Shard's: the check is on the `chrome-extension://`
   prefix, not on Shard's extension ID.
 - Headers are capped at 16 KiB, bodies at 256 KiB, and each connection gets 10 seconds.
@@ -106,25 +107,49 @@ and, for each platform, the update build's size, SHA-256 and URL. Shard:
 What this protects against: a release asset replaced or corrupted on GitHub, a tampered
 download, or anyone serving a fake update without the private key. What it doesn't cover:
 
-- **The first install.** Nothing signed protects the DMG, Setup `.exe`, zip, tarball or package
-  you download by hand. Check it against `SHA256SUMS` (below). `SHA256SUMS` is published by the
-  same release, so it detects a corrupted download, not a compromised release.
+- **The first install.** Nothing signed protects the DMG, Setup `.exe`, zip, AppImage, tarball
+  or package you download by hand. Check it against `SHA256SUMS` (below). `SHA256SUMS` is
+  published by the same release, so it detects a corrupted download, not a compromised release.
+  Homebrew, Scoop and winget check the SHA-256 that the release workflow wrote into their
+  manifests from the same files, which gives the same assurance.
 - **A stolen release key.** Whoever holds `UPDATE_SIGNING_KEY` can sign updates. It lives only as
   a GitHub Actions secret and in the maintainer's offline backup.
 - **Being held back.** The manifest has no expiry date, so someone able to serve an old manifest
   could stop you seeing new versions. Fetching it over HTTPS from github.com makes that hard.
-- **Copies that don't update themselves**: package-managed Linux installs (under `/usr`), and
-  copies in a folder Shard can't write to. They say so in the Limits panel and update through
-  their package manager or by hand.
+- **Copies that don't update themselves**: package-managed Linux installs (under `/usr`), an
+  AppImage run without installing (its binary is in a read-only mount), and copies in a folder
+  Shard can't write to. They say so in the Limits panel and update through their package
+  manager or by hand.
 
 ### Unsigned builds, Gatekeeper and SmartScreen
 
-Unless the release workflow has the Apple signing secrets, the macOS app is signed ad hoc and
-isn't notarised, so Gatekeeper asks before the first launch. The Windows `.exe` isn't
-code-signed, so SmartScreen may warn. The Linux packages aren't signed. The update signature
-above is what ties later updates to the project; for the first download, use `SHA256SUMS`.
+Unless the release workflow has the Apple signing secrets, the macOS app and disk image are
+signed ad hoc or not at all and aren't notarised, so Gatekeeper asks before the first launch.
+The Windows Setup `.exe` and `Shard.exe` aren't code-signed, so SmartScreen may warn. The Linux
+AppImage, `.deb` and `.rpm` aren't signed. The update signature above is what ties later updates
+to the project; for the first download, use `SHA256SUMS`.
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) explains how to open the app past these
 prompts.
+
+### Setup
+
+Setup installs for the current user only and never asks for administrator rights: into
+`/Applications` only when that folder is writable (else `~/Applications`), and on Windows and
+Linux into the user's own folders and registry hive (`HKCU`). It installs the copy that's
+running, so it's only as trustworthy as the file you opened; check that file first. On macOS it
+removes the quarantine attribute from the copy it installs, because that's the app you just
+opened and allowed. Before replacing a running Shard it asks it to quit over the local endpoint
+(`POST /quit`), which a web page can't send (see above).
+
+### The release workflow
+
+The secrets that sign and publish Shard live only in the repository's GitHub Actions secrets
+([docs/RELEASING.md](docs/RELEASING.md#secrets)): the update signing key, the Apple signing and
+notarising credentials, a deploy key for each of `manyeya/homebrew-tap` and
+`manyeya/scoop-bucket` (each can write only to its own repository), and the credentials of the
+owner's developer accounts in the three browser stores. Only the release workflow can write to
+the repository (`contents: write`, to publish the release); CI, the audit and CodeQL can only
+read the code. The workflows are checked by actionlint in CI and by CodeQL.
 
 ### The browser extension's permissions
 
@@ -132,10 +157,17 @@ prompts.
 | --- | --- |
 | `downloads` | To see each new download, and to cancel and erase the browser's copy once Shard has taken it over. |
 | `cookies` | To read the cookies for the download's URL and pass them to Shard, so downloads behind a login work. It reads them only for the URL being downloaded, when a download starts. |
-| `host_permissions: <all_urls>` | Downloads can come from any site, and Chrome only gives the cookies API access to sites the extension has host permission for. It also covers the request to `http://127.0.0.1:47110`. |
+| `host_permissions: <all_urls>` | Downloads can come from any site, and the browser only gives the cookies API access to sites the extension has host permission for. It also covers the request to `http://127.0.0.1:47110`. |
 
-The extension sends data only to `127.0.0.1:47110`. It has no content scripts and never reads
-pages. If Shard isn't running, or refuses the download, the browser keeps the download.
+The Chromium and Firefox builds ask for the same permissions; the Firefox build also declares
+that it collects no data (`data_collection_permissions`). The extension sends data only to
+`127.0.0.1:47110`: the download to `POST /add`, and an empty `POST /hello` when it's installed or
+updated. It has no content scripts and never reads pages. If Shard isn't running, or refuses the
+download, the browser keeps the download.
+
+People install it from the Chrome Web Store, Edge Add-ons or Firefox Add-ons, which review each
+version before publishing it, and the browser updates it from there. The same zips are attached
+to every release.
 
 ### Downloaded files
 
@@ -150,8 +182,9 @@ aren't filtered yet.
 - Anything that needs an attacker to already run code as you, or to have admin rights.
 - A server you chose to download from sending you a malicious file.
 - Denial of service by a server, such as one that never finishes sending.
-- Problems in third-party dependencies with no effect on Shard (report those upstream; we track
-  advisories with `cargo deny`).
+- Problems in third-party dependencies with no effect on Shard (report those upstream). We track
+  RustSec advisories with `cargo deny`, on every dependency change and weekly, and Dependabot
+  proposes dependency updates every week.
 
 ## Verifying a release
 

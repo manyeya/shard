@@ -21,7 +21,7 @@ maintainer or other users.
   refusing to open Shard the first time, the browser extension not handing downloads over, port
   47110 being taken, no tray icon on Linux, notifications on macOS, and resetting settings.
 - The README's "Not yet" list says what Shard doesn't do yet: torrents, downloads a page starts
-  with a POST, and Firefox.
+  with a POST.
 - Make sure you're on the latest release. Open the Limits panel (the sliders button in the title
   bar, or ⌘, on macOS and Ctrl+, elsewhere): the line under "Update automatically" shows your
   version, and "Check now" looks for a newer one.

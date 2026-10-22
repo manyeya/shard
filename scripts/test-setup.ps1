@@ -1,10 +1,13 @@
 # Install Shard with its Setup.exe and `--silent`, check what it put where, then remove it with
 # `--uninstall --silent` and check it's gone. CI runs it on Windows.
-#   scripts/test-setup.ps1 <Shard-Setup-….exe>
-param([Parameter(Mandatory)][string]$Setup)
+# It installs into the real places (your Start menu, Settings > Apps, %LOCALAPPDATA%\Programs), so
+# it only runs in CI, or with -Force on a machine you don't mind that on.
+#   scripts/test-setup.ps1 <Shard-Setup-….exe> [-Force]
+param([Parameter(Mandatory)][string]$Setup, [switch]$Force)
 $ErrorActionPreference = "Stop"
+if (-not $env:CI -and -not $Force) { throw "This installs Shard for real and removes it again; pass -Force to run it here" }
 $env:SHARD_PORT = "47119"
-$env:SHARD_DATA = Join-Path $env:RUNNER_TEMP "shard-setup-data"
+$env:SHARD_DATA = Join-Path ($env:RUNNER_TEMP ?? $env:TEMP) "shard-setup-data"
 $exe = Join-Path $env:LOCALAPPDATA "Programs\Shard\Shard.exe"
 $menu = Join-Path ([Environment]::GetFolderPath("Programs")) "Shard.lnk"
 $uninstall = "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Shard"

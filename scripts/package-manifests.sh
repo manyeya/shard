@@ -4,6 +4,8 @@
 #   <out>/bucket/shard.json                      Scoop manifest, for manyeya/scoop-bucket
 #   <out>/winget/manifests/m/manyeya/Shard/<v>/  winget manifests, for microsoft/winget-pkgs
 #   scripts/package-manifests.sh <version> <dist> <out>
+# With NOTARISED=true (the disk image was signed and notarised), the cask leaves out its note about
+# allowing Shard in Privacy & Security.
 set -eu
 version=${1:?usage: scripts/package-manifests.sh <version> <dist> <out>}
 dist=${2:?}
@@ -15,6 +17,15 @@ zip="Shard-$version-windows-x64.zip"
 setup="Shard-Setup-$version-windows-x64.exe"
 sha() { shasum -a 256 "$dist/$1" | cut -d' ' -f1; }
 summary="Download manager that fetches every file in parallel parts and resumes after anything"
+caveats=""
+if [ "${NOTARISED:-false}" != true ]; then
+	caveats='
+
+  caveats <<~EOS
+    Shard isn'"'"'t notarised by Apple yet. If macOS won'"'"'t open it, open System Settings,
+    then Privacy & Security, and choose Open Anyway beside Shard.
+  EOS'
+fi
 
 mkdir -p "$out/Casks" "$out/bucket"
 cat > "$out/Casks/shard.rb" <<RUBY
@@ -44,12 +55,7 @@ cask "shard" do
   zap trash: [
     "~/Library/Application Support/shard",
     "~/Library/LaunchAgents/dev.shard.app.plist",
-  ]
-
-  caveats <<~EOS
-    Shard isn't notarised by Apple yet. If macOS won't open it, open System Settings,
-    then Privacy & Security, and choose Open Anyway beside Shard.
-  EOS
+  ]$caveats
 end
 RUBY
 

@@ -186,8 +186,13 @@ fn answer_hello(mut s: std::net::TcpStream) -> bool {
         }
     }
     let head = String::from_utf8_lossy(&buf).to_ascii_lowercase();
-    let from_extension = head.lines().any(|l| l.starts_with("origin: chrome-extension://") || l.starts_with("origin: moz-extension://"));
-    let hello = head.starts_with("post /hello ") && from_extension;
+    // As in `handle`: a web page always sends its Origin, so refuse those; extensions send theirs,
+    // or (Firefox, for hosts it has permission for) none.
+    let from_page = head
+        .lines()
+        .filter_map(|l| l.strip_prefix("origin:"))
+        .any(|o| !(o.trim().starts_with("chrome-extension://") || o.trim().starts_with("moz-extension://")));
+    let hello = head.starts_with("post /hello ") && !from_page;
     let (status, body) = if hello { ("200 OK", "hello") } else { ("404 Not Found", "setup is running") };
     let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     hello
@@ -212,6 +217,25 @@ fn ask(request: &str, body: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::engine::tests::scratch;
+
+    #[test]
+    fn setup_hears_the_extensions_hello_and_not_a_pages() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let send = |origin: &str| {
+            let mut s = std::net::TcpStream::connect(addr).unwrap();
+            write!(s, "POST /hello HTTP/1.1\r\nHost: 127.0.0.1\r\n{origin}Content-Length: 0\r\n\r\n").unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let heard = answer_hello(stream);
+            let mut reply = String::new();
+            s.read_to_string(&mut reply).unwrap();
+            (heard, reply.starts_with("HTTP/1.1 200"))
+        };
+        assert_eq!(send("Origin: chrome-extension://abcdef\r\n"), (true, true));
+        assert_eq!(send(""), (true, true), "Firefox may send no Origin");
+        assert_eq!(send("Origin: https://evil.example\r\n"), (false, false));
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn only_the_extension_can_add() {

@@ -11,6 +11,7 @@ Fixes for the problems people run into most. If yours isn't here, ask in
 - [macOS: "Shard can't be opened"](#macos-shard-cant-be-opened)
 - [Windows: SmartScreen stops Shard](#windows-smartscreen-stops-shard)
 - [Port 47110 is taken](#port-47110-is-taken)
+- [Setup didn't see the extension connect](#setup-didnt-see-the-extension-connect)
 - [The browser extension doesn't hand downloads over](#the-browser-extension-doesnt-hand-downloads-over)
 - [A download fails](#a-download-fails)
 - [Linux: no tray icon](#linux-no-tray-icon)
@@ -115,6 +116,39 @@ Stop or reconfigure that program. Setting `SHARD_PORT` moves Shard to another po
 extension always talks to 47110, so that only helps if you don't use the extension (it's meant for
 running a development copy beside an installed one).
 
+## Setup didn't see the extension connect
+
+Setup's last step opens Shard's page in each browser's store and waits for the extension to say
+hello. As it's added, the extension sends an empty `POST /hello` to `127.0.0.1:47110`; setup holds
+that port while the step is up, and when the hello arrives it shows "Shard is in" the browser and
+moves on. Until then it says "Waiting for" the browser "to add it…", or, if it couldn't listen at
+all, "Setup can't hear the browser from here; move on once it's added".
+
+The extension works whether or not setup saw it arrive, so you can always choose **Skip this one**
+or **Finish**, then start a download to check (see
+[the browser extension doesn't hand downloads over](#the-browser-extension-doesnt-hand-downloads-over)).
+The usual reasons setup doesn't hear it:
+
+- **The extension wasn't added.** The store page opened, but its button (Add to Chrome, Get, or
+  Add to Firefox) and then the browser's own confirmation weren't both pressed. Choose **Open it
+  again** and finish adding it. When setup sends Edge to the Chrome Web Store, Edge first asks
+  you to allow extensions from other stores.
+- **It was there already.** The extension says hello only when it's installed or updated, so if
+  it was in that browser before setup ran, setup never hears from it. Check the browser's
+  extensions page (`chrome://extensions`, `edge://extensions`, `about:addons` in Firefox): if
+  "Shard integration" is there and on, you're done.
+- **Something else holds port 47110.** Setup closes a running Shard as its first step, but if
+  another program (or a Shard started again since) has the port, setup can't listen there. Find
+  it as in [port 47110 is taken](#port-47110-is-taken). Setup started with `SHARD_PORT` set
+  listens on that port instead, which the extension never uses.
+- **Requests to 127.0.0.1 are blocked.** A browser policy set by an organisation, another
+  extension or security software can stop the extension reaching Shard on your own computer. The
+  extension's console shows it: in a Chromium browser, turn on Developer mode at
+  `chrome://extensions` and open the extension's service worker; in Firefox, open
+  `about:debugging`, then This Firefox, and Inspect beside Shard integration. A failed request to
+  `http://127.0.0.1:47110/hello` there means it was blocked; the same block stops downloads being
+  handed over, so allow `127.0.0.1` for the browser or that program.
+
 ## The browser extension doesn't hand downloads over
 
 Work through these in order:
@@ -125,17 +159,19 @@ Work through these in order:
 2. **Is Shard reachable?** `curl http://127.0.0.1:47110/ping` should print `shard`. If it
    doesn't, see [port 47110 is taken](#port-47110-is-taken). A Shard started with `SHARD_PORT`
    set can't be reached by the extension.
-3. **Is the extension loaded and on?** Open `chrome://extensions` (`edge://extensions`,
-   `brave://extensions`, `arc://extensions`, and so on) and check "Shard integration" is there
-   and enabled. After replacing its folder with a new version, press its reload button. Don't
-   delete or move the folder you loaded it from: the browser loads it from there each time.
+3. **Is the extension added and on?** Open `chrome://extensions` (`edge://extensions`,
+   `brave://extensions`, `arc://extensions`, and so on, or `about:addons` in Firefox) and check
+   "Shard integration" is there and enabled. If it isn't, add it from your browser's store (the
+   Chrome Web Store, Edge Add-ons or Firefox Add-ons), where setup's last step would have taken
+   you.
 4. **Is it a kind of download Shard takes?** The extension leaves these to the browser:
    - links that aren't `http://` or `https://`, such as `blob:` and `data:` files a page makes
      itself;
    - downloads that aren't in progress, such as old ones the browser restores to its list.
-5. **Is the browser supported?** The extension is for Chromium browsers: Chrome, Edge, Brave,
-   Arc, Vivaldi, Opera and Chromium. Firefox isn't supported yet. If your browser is managed by
-   an organisation, its policy may block unpacked extensions.
+5. **Is the browser supported?** The extension runs in Chromium browsers from version 116
+   (Chrome, Edge, Brave, Arc, Vivaldi, Opera and Chromium) and in Firefox 128 or later. If your
+   browser is managed by an organisation, its policy may block extensions from the stores, or
+   requests to `127.0.0.1`.
 
 Some downloads are handed over but then fail in Shard:
 
@@ -224,7 +260,7 @@ The update line in the Limits panel says what's happening. If it says:
 | --- | --- |
 | `Installed by a package manager: update Shard through it.` | Shard was installed under `/usr`, by the `.deb` or `.rpm`. Update it with `apt`, `dnf` or the package you downloaded. |
 | `Updates install into Shard.app, and this copy isn't one.` | On macOS, only a `Shard.app` updates itself. Use the app from the disk image. |
-| `Move Shard somewhere you can write to (not …) to update it.` | Shard needs to replace itself in that folder. Install it into Applications (macOS), your user folder (Windows) or `~/.local/bin` (Linux), or run setup. On macOS, a Shard opened straight from the disk image or Downloads may be running from a read-only copy; move it to Applications. |
+| `Move Shard somewhere you can write to (not …) to update it.` | Shard needs to replace itself in that folder. Install it into Applications (macOS), your user folder (Windows) or `~/.local/bin` (Linux), or run setup. On macOS, a Shard opened straight from the disk image or Downloads may be running from a read-only copy; move it to Applications. An AppImage run without installing is always read-only (the folder named is the AppImage's own mount, usually under `/tmp`): start it with `--setup` to install it into `~/.local/bin`, where it updates itself. |
 | `Couldn't check: …` | The check failed, often because there's no connection to github.com. It tries again in six hours, or choose **Check now**. If it says the signature doesn't match, don't install anything by hand from elsewhere: report it (see [SECURITY.md](../SECURITY.md)). |
 
 Updates are off when "Update automatically" is off (Check now still works) or when the

@@ -10,39 +10,78 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Every releas
 
 ### Added
 
-- Setup built into the app. The `shard` binary carries its own animated setup window; a copy that
-  isn't installed offers to install itself, and `--setup` asks for it.
+- **Setup, built into the app.** The `shard` binary carries its own animated setup window. A
+  copy that isn't installed offers to install itself when it's opened, `--setup` asks for it, and
+  `--silent` does the same with the defaults and no window. It closes a running Shard first
+  (downloads carry on where they left off), copies the new one in beside the old and swaps them,
+  so a failed copy leaves the old one working, and can start Shard at login.
   - Windows: `Shard-Setup-X.Y.Z-windows-x64.exe` installs for the current user into
     `%LOCALAPPDATA%\Programs\Shard` without administrator rights, adds a Start menu shortcut
-    (and a desktop one if you ask), registers an uninstaller under Settings › Apps, can start
-    Shard at login, and walks you through adding the browser extension.
-    `Shard-Setup-X.Y.Z-windows-x64.exe --silent` installs with the defaults and no window.
-  - macOS: open the disk image and either drag Shard to Applications or double-click it. Opened
+    (and a desktop one if you ask), and registers an uninstaller under Settings › Apps.
+  - macOS: open the disk image and either drag Shard to Applications or open it there. Opened
     from outside Applications, Shard offers to install itself into `/Applications` (or
-    `~/Applications` when that isn't writable), start at login and add the browser extension.
-  - Linux: the `.deb` and `.rpm` install system-wide. The tarball and AppImage binaries offer the
-    same setup: the binary into `~/.local/bin`, a desktop entry and icons under
+    `~/Applications` when that isn't writable).
+  - Linux: the `.deb` and `.rpm` install system-wide. The AppImage and the tarball's binary offer
+    setup instead: the binary into `~/.local/bin`, a desktop entry and icons under
     `~/.local/share`, or "Run without installing".
-  - The extension step opens Shard's page in each browser's own store (Chrome Web Store, Edge
-    Add-ons or Firefox Add-ons) for every browser it finds, and waits for the extension to say
-    hello when it's added, so it can confirm it's connected. It's offered only for stores where
-    Shard is listed; until then, the extension is added by hand from the extension zip.
+  - The last step finds the browsers on the computer, opens Shard's page in each one's store
+    (the Chrome Web Store for Chrome, Arc, Brave, Vivaldi, Opera and Chromium; Edge Add-ons for
+    Edge, or the Chrome Web Store until Edge has a listing; Firefox Add-ons for Firefox), and
+    waits for the extension to say hello, so it can show it's connected. A store is offered once
+    Shard's ID there is known.
 - `shard --uninstall` removes Shard (`--silent` for no window), optionally with its history and
-  settings.
+  settings. On Windows, Settings › Apps runs it.
 - `shard --version` prints `shard X.Y.Z`.
-- `SHARD_NO_SETUP=1` stops a copy offering setup; `SHARD_INSTALL_DIR` changes where setup
-  installs.
-- The local endpoint gains `POST /hello` (the extension announcing itself) and `POST /quit`
-  (setup asking a running Shard to quit before replacing it).
-- New release packages: the Windows Setup `.exe` beside the portable zip; `.rpm` and AppImage
-  beside the `.deb` and tarball for Linux x64 and arm64.
-- A Homebrew cask (`brew install --cask manyeya/tap/shard`) and a Scoop manifest
-  (`scoop bucket add manyeya https://github.com/manyeya/scoop-bucket`, then
-  `scoop install shard`), updated by the release workflow.
-- The repository's community and project files: dual MIT or Apache-2.0 licence files,
-  contributing guide, code of conduct, security policy, support and governance pages, this
-  changelog, architecture, building, releasing, privacy and troubleshooting docs, issue and pull
-  request templates, Dependabot, a `cargo deny` audit and CodeQL analysis.
+- `SHARD_NO_SETUP` stops a copy offering setup, `SHARD_INSTALL_DIR` changes where setup installs,
+  `SHARD_SETUP_DEMO` runs the setup window with pretend steps, and `SHARD_REDUCE_MOTION=1` keeps
+  it still (as the system's reduce-motion setting does).
+- The local endpoint answers `POST /hello` (the extension announcing itself when it's installed
+  or updated) and `POST /quit` (setup asking a running Shard to quit before replacing or removing
+  it). Both refuse web pages, like the rest.
+- **The extension for Firefox** (128 or later), built from the same source as the Chromium one,
+  and published to the browsers' stores: the Chrome Web Store, Edge Add-ons and Firefox Add-ons.
+  It says hello to Shard when it's installed, for setup.
+- **New release files.** `Shard-Setup-X.Y.Z-windows-x64.exe`; an AppImage and an `.rpm` for Linux
+  x64 and arm64, beside the `.deb` and the tarball; a disk image with a background and the
+  Applications link laid out by Finder (made with create-dmg); the extension as
+  `shard-extension-X.Y.Z-chrome.zip` and `shard-extension-X.Y.Z-firefox.zip`. The Windows zip
+  and the Linux tarballs carry both licence files, and the `.deb` and `.rpm` install them.
+- **Package managers.** A Homebrew cask (`brew install --cask manyeya/tap/shard`) and a Scoop
+  manifest (`scoop bucket add manyeya https://github.com/manyeya/scoop-bucket`, then
+  `scoop install shard`), updated by the release workflow, and winget manifests (`manyeya.Shard`)
+  written with each release for submitting to winget-pkgs.
+- **Store publishing.** For each tagged release the workflow sends the extension to the Chrome
+  Web Store, Edge Add-ons and Firefox Add-ons, each once its credentials are set, and builds carry
+  the store IDs from the repository's variables so setup can link to them.
+- **Checks.** CI runs Clippy with warnings as errors, and installs, reinstalls and removes Shard
+  with setup for real on macOS, Linux and Windows; it packages the extension and lints the Firefox
+  build with web-ext, and checks the workflows with actionlint. Each release build runs the same
+  setup check before its files are uploaded. `cargo deny` checks dependencies for advisories,
+  licences and sources, CodeQL analyses the Rust code and the workflows, and Dependabot proposes
+  updates weekly.
+- **Docs and project files.** Dual MIT or Apache-2.0 licence files, with the licence and
+  repository details in `Cargo.toml`; a contributing guide, code of conduct, security policy,
+  support and governance pages and this changelog; docs on architecture, building, releasing,
+  getting the extension into the stores, privacy and troubleshooting; the store listing text and
+  artwork (`packaging/stores/`, rendered by `scripts/render-art.sh`); a privacy page on the
+  website; issue and pull request templates.
+
+### Changed
+
+- The extension comes from the browsers' stores, which setup opens, instead of being loaded
+  unpacked from a zip.
+- Release maintainers: the Chrome Web Store item is now the repository variable
+  `CHROME_STORE_ID`; the `CWS_EXTENSION_ID` secret isn't read any more.
+
+### Fixed
+
+- The Linux update file `shard-X.Y.Z-linux-<arch>` is the bare binary, which installed copies
+  update from; the release workflow had been uploading a folder under that name.
+
+### Security
+
+- rustls 0.23.46 for RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and
+  RUSTSEC-2026-0349, and rustls-webpki 0.103.16 for RUSTSEC-2026-0382.
 
 ## [0.1.0]
 

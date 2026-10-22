@@ -1,29 +1,38 @@
 # Releasing Shard
 
 Releases are built and published by `.github/workflows/release.yml` when a tag `vX.Y.Z` is pushed.
-This is the maintainer's checklist, with what the workflow does, how to check its output, and how
-the update signing key and the other secrets work.
+This is the maintainer's checklist: what the workflow makes, the secrets and variables it reads,
+how the package managers and browser stores get each version, how to check a release, and how
+the update signing key works. Getting the extension into the stores the first time is in
+[STORES.md](STORES.md).
 
 ## Contents
 
 - [Before you start](#before-you-start)
 - [The checklist](#the-checklist)
 - [What the workflow does](#what-the-workflow-does)
+- [What a release contains](#what-a-release-contains)
+- [Secrets](#secrets)
+- [Variables](#variables)
+- [Homebrew, Scoop and winget](#homebrew-scoop-and-winget)
+- [The browser stores](#the-browser-stores)
 - [Checking the release](#checking-the-release)
 - [A dry run](#a-dry-run)
 - [When something goes wrong](#when-something-goes-wrong)
 - [The update signing key](#the-update-signing-key)
-- [Secrets](#secrets)
-- [Homebrew and Scoop](#homebrew-and-scoop)
-- [The Chrome Web Store](#the-chrome-web-store)
 
 ## Before you start
 
 - Versions follow [semver](https://semver.org). Installed copies compare versions by semver to
-  decide whether an update is newer, so a version must always go up.
+  decide whether an update is newer, and the browser stores only take a version higher than the
+  one they have, so a version must always go up.
 - `UPDATE_SIGNING_KEY` must be set in the repository's Actions secrets, or the release job fails
   (see [the update signing key](#the-update-signing-key)).
-- Everything to release is on `dev`, and CI is green there on macOS, Linux and Windows.
+- Everything to release is on `dev`, and CI is green there: the tests, Clippy and the setup
+  check on macOS, Linux and Windows, the Firefox build's lint, and actionlint.
+- The store IDs are compiled into every binary the workflow builds. Set a store's
+  [variable](#variables) before the release whose setup should offer that store, and only once
+  its listing is public.
 
 ## The checklist
 
@@ -36,10 +45,13 @@ the update signing key and the other secrets work.
    [X.Y.Z]: https://github.com/manyeya/shard/compare/vPREVIOUS...vX.Y.Z
    ```
 
+   The release job uses this section as the release notes: everything from the line starting
+   `## [X.Y.Z]` to the next `## [` heading.
+
 2. **Bump the version** in `Cargo.toml` (`version = "X.Y.Z"` under `[package]`) and in
-   `extension/manifest.json` (`"version": "X.Y.Z"`). The workflow sets the extension zip's version
-   itself, but keeping the source copy the same means an unpacked extension says the right
-   version too.
+   `extension/manifest.json` (`"version": "X.Y.Z"`). `scripts/package-extension.sh` sets the
+   version in the extension zips itself, but keeping the source the same means a copy loaded
+   unpacked during development says the right version too.
 
 3. **Update `Cargo.lock`** so it records the new version, without changing anything else:
 
@@ -57,7 +69,7 @@ the update signing key and the other secrets work.
    git push origin dev
    ```
 
-5. **Wait for CI to pass** on all three systems for that commit.
+5. **Wait for CI to pass** for that commit.
 
 6. **Fast-forward `main`** to `dev`. Never merge or commit straight to `main`:
 
@@ -79,31 +91,43 @@ the update signing key and the other secrets work.
    The tag must be exactly `v` plus `Cargo.toml`'s version; the workflow's first job fails
    otherwise.
 
-8. **Watch the Release workflow** in the Actions tab until it finishes, then
-   [check the release](#checking-the-release).
+8. **Watch the Release workflow** in the Actions tab (or with `gh run watch -R manyeya/shard`)
+   until the `release` and `packages` jobs have finished.
 
-9. **Edit the release notes.** The release is created with GitHub's generated notes (pull
-   requests grouped by label, see `.github/release.yml`). Commits pushed straight to `dev`
-   without a pull request don't appear there, so paste the changelog section in as well.
+9. **Check the release**, following [checking the release](#checking-the-release).
 
-10. **Go back to `dev`** (`git switch dev`) for the next change.
+10. **Submit the winget manifests** from the run's `winget-manifests` artifact (see
+    [winget](#winget)). Nothing else does it.
+
+11. **Read the release notes.** They're the version's section of `CHANGELOG.md`, followed by
+    GitHub's generated notes (pull requests grouped by label, see `.github/release.yml`). If the
+    section wasn't found, the notes only say to see the changelog; paste the section in by hand.
+
+12. **Go back to `dev`** (`git switch dev`) for the next change.
 
 ## What the workflow does
 
-`release.yml` runs on any pushed tag matching `v*`, and by hand (`workflow_dispatch`).
+`release.yml` runs on any pushed tag matching `v*`, and by hand (`workflow_dispatch`). It passes
+the repository variables `CHROME_STORE_ID`, `EDGE_STORE_ID` and `FIREFOX_STORE_SLUG` to every
+job as `SHARD_CHROME_STORE_ID`, `SHARD_EDGE_STORE_ID` and `SHARD_FIREFOX_STORE_SLUG`, so every
+binary it builds carries them (see [variables](#variables)).
 
-| Job | Runner | What it makes |
-| --- | --- | --- |
-| `version` | `ubuntu-latest` | Reads the version from `Cargo.toml`; for a tag, fails unless the tag is `v<version>`. |
-| `macos` | `macos-14` | Builds `aarch64` and `x86_64`, joins them with `lipo`, bundles `Shard.app` (signed with the Developer ID if the certificate secrets are set, ad hoc otherwise), makes `Shard-X.Y.Z-macos-universal.dmg` (signed, notarised and stapled when the Apple secrets are set) and the update archive `Shard-X.Y.Z-macos-universal.zip`. |
-| `windows` | `windows-2022` | Builds `shard.exe` and packages `Shard-X.Y.Z-windows-x64.zip` (`Shard.exe` and the README) and the bare `Shard-X.Y.Z-windows-x64.exe` that installed copies update from. |
-| `linux` | `ubuntu-22.04` and `ubuntu-22.04-arm` | For x64 and arm64: `shard-X.Y.Z-linux-<arch>.tar.gz`, `shard_X.Y.Z_<amd64 or arm64>.deb` (with cargo-deb), and the bare binary `shard-X.Y.Z-linux-<arch>`. |
-| `extension` | `ubuntu-latest` | `shard-extension-X.Y.Z.zip`, with the manifest's version set to the release's; uploads it to the Chrome Web Store when that's set up. |
-| `release` | `ubuntu-latest` | Only for a tag, after every build job succeeded: writes `update.txt`, signs it into `update.txt.sig` with `UPDATE_SIGNING_KEY`, writes `SHA256SUMS` over every file, and publishes them all as a GitHub release with generated notes. |
+| Job | Runner | Runs after | What it does |
+| --- | --- | --- | --- |
+| `version` | `ubuntu-latest` | | Reads the version from `Cargo.toml`. For a tag, fails unless the tag is `v<version>`. |
+| `macos` | `macos-14` | `version` | Builds `aarch64-apple-darwin` and `x86_64-apple-darwin` and joins them with `lipo`. If `MACOS_CERTIFICATE` is set, loads it into a temporary keychain and finds its Developer ID Application identity. Bundles `Shard.app` with `scripts/bundle-macos.sh` (signed with that identity and the hardened runtime, otherwise ad hoc). Runs `scripts/test-setup.sh` on the bundle. Installs `create-dmg` with Homebrew and makes the disk image with `scripts/make-dmg.sh`, signing it when there's an identity. Notarises and staples it when there's an identity and `APPLE_ID`. Zips `Shard.app` with `ditto` for updates. |
+| `windows` | `windows-2022` | `version` | Builds `shard.exe` (with `AWS_LC_SYS_PREBUILT_NASM=1`), writes the portable zip, the Setup `.exe` and the bare `.exe`, then runs `scripts/test-setup.ps1` on the Setup `.exe`. |
+| `linux` | `ubuntu-22.04` (x64), `ubuntu-22.04-arm` (arm64) | `version` | Installs the build libraries with `scripts/linux-deps.sh`, builds, runs `scripts/test-setup.sh` on the binary, then makes the tarball, the `.deb` (cargo-deb), the bare binary, the `.rpm` (cargo-generate-rpm 0.21.1) and the AppImage (appimagetool 1.9.1). |
+| `extension` | `ubuntu-latest` | `version` | Packages the Chrome and Firefox zips with `scripts/package-extension.sh` and lints the Firefox build with `web-ext lint --warnings-as-errors` (web-ext 8). |
+| `release` | `ubuntu-latest` | all of the above | Only for a tag. Takes the version's section of `CHANGELOG.md` as the release notes, writes `update.txt`, signs it into `update.txt.sig` with `UPDATE_SIGNING_KEY`, writes `SHA256SUMS` over every file, and publishes them all as a GitHub release, with GitHub's generated notes after the changelog's. |
+| `packages` | `ubuntu-latest` | `version`, `release` | Only when `release` ran. Writes the Homebrew cask, the Scoop manifest and the winget manifests with `scripts/package-manifests.sh` from the release's files, pushes the cask to `manyeya/homebrew-tap` and the Scoop manifest to `manyeya/scoop-bucket`, and uploads the winget manifests as the `winget-manifests` artifact. The cask's note about Open Anyway is left out when the disk image was notarised. |
+| `chrome-web-store`, `edge-add-ons`, `firefox-add-ons` | `ubuntu-latest` | `version`, `release` | Only when `release` ran. Each sends the extension to its store, if that store's credentials are set (see [the browser stores](#the-browser-stores)). |
 
-The packages being added with the installer (the Windows `Shard-Setup-X.Y.Z-windows-x64.exe`, the
-Linux `.rpm` and AppImage, and the Homebrew and Scoop updates) are produced by the same workflow;
-check the workflow file for their exact steps.
+The setup check each build job runs installs the app with `--setup --silent` (on Windows, the
+Setup `.exe` with `--silent`), checks what landed where, installs again over the top as an update
+would, then removes it with `--uninstall --silent` and checks it's gone. On macOS and Linux it
+works in a scratch home and install folder; on Windows it uses the runner's real
+`%LOCALAPPDATA%\Programs\Shard`, Start menu and registry.
 
 `update.txt` is the manifest installed copies read:
 
@@ -126,51 +150,304 @@ Installed copies fetch `https://github.com/manyeya/shard/releases/latest/downloa
 which is the newest non-prerelease, non-draft release. Publishing a release is what makes the
 update reach people, within six hours.
 
+## What a release contains
+
+`<arch>` is `x64` or `arm64`.
+
+| File | What it is |
+| --- | --- |
+| `Shard-X.Y.Z-macos-universal.dmg` | The disk image: `Shard.app` beside an Applications link, on the background in `packaging/macos/`. Opened from there, Shard offers to install itself. |
+| `Shard-X.Y.Z-macos-universal.zip` | `Shard.app`, zipped with `ditto`: what installed copies on macOS update from. |
+| `Shard-Setup-X.Y.Z-windows-x64.exe` | The Windows installer. It's the same binary as `Shard.exe`: a copy whose file name contains "setup" runs setup when it's opened. |
+| `Shard-X.Y.Z-windows-x64.zip` | The portable zip: `Shard.exe`, `README.md`, `LICENSE-MIT` and `LICENSE-APACHE`. It runs where it's unpacked and doesn't offer setup. Scoop installs this. |
+| `Shard-X.Y.Z-windows-x64.exe` | The bare binary installed copies on Windows update from. |
+| `Shard-X.Y.Z-linux-<arch>.AppImage` | The AppImage. Opened, it offers to install Shard into `~/.local/bin`. |
+| `shard_X.Y.Z_amd64.deb`, `shard_X.Y.Z_arm64.deb` | Debian and Ubuntu packages, built by cargo-deb from `[package.metadata.deb]` in `Cargo.toml`. |
+| `shard-X.Y.Z-1.x86_64.rpm`, `shard-X.Y.Z-1.aarch64.rpm` | Fedora, RHEL and openSUSE packages, built by cargo-generate-rpm from `[package.metadata.generate-rpm]`. |
+| `shard-X.Y.Z-linux-<arch>.tar.gz` | A folder with `shard`, `shard.desktop`, `shard.png` (the 512 px icon), `README.md`, `LICENSE-MIT` and `LICENSE-APACHE`. |
+| `shard-X.Y.Z-linux-<arch>` | The bare binary installed copies on Linux update from. |
+| `shard-extension-X.Y.Z-chrome.zip` | The extension for the Chrome Web Store and Edge Add-ons. |
+| `shard-extension-X.Y.Z-firefox.zip` | The extension for Firefox Add-ons. |
+| `update.txt`, `update.txt.sig` | The update manifest and its Ed25519 signature. |
+| `SHA256SUMS` | The SHA-256 of every other file in the release. |
+
+## Secrets
+
+Set these under Settings › Secrets and variables › Actions › Secrets, or with
+`gh secret set NAME -R manyeya/shard`, which asks for the value so it stays out of your shell
+history. Every one except `UPDATE_SIGNING_KEY` is optional: a step that needs one is skipped
+without it.
+
+| Secret | Used by | What it does, and what happens without it |
+| --- | --- | --- |
+| `UPDATE_SIGNING_KEY` | `release` | The Ed25519 private key (PEM) that signs `update.txt`. Required: the release job fails without it. |
+| `MACOS_CERTIFICATE` | `macos` | A Developer ID Application certificate as a `.p12`, base64-encoded. With it, `Shard.app` and the disk image are signed with that identity (the app with the hardened runtime). Without it, the app is signed ad hoc and the disk image isn't signed. |
+| `MACOS_CERTIFICATE_PASSWORD` | `macos` | The `.p12`'s password. |
+| `APPLE_ID` | `macos` | The Apple ID that notarises. Notarising and stapling run only when there's a signing identity and this is set. |
+| `APPLE_TEAM_ID` | `macos` | The team ID, for notarising. |
+| `APPLE_APP_PASSWORD` | `macos` | An app-specific password for that Apple ID. |
+| `TAP_DEPLOY_KEY` | `packages` | A private SSH deploy key with write access to `manyeya/homebrew-tap`. Without it, the cask isn't pushed (the log says "No deploy key for manyeya/homebrew-tap; skipping it"). |
+| `BUCKET_DEPLOY_KEY` | `packages` | The same for `manyeya/scoop-bucket` and the Scoop manifest. |
+| `CWS_CLIENT_ID` | `chrome-web-store` | The OAuth client ID for the Chrome Web Store API. |
+| `CWS_CLIENT_SECRET` | `chrome-web-store` | That client's secret. |
+| `CWS_REFRESH_TOKEN` | `chrome-web-store` | A refresh token for the account that owns the Chrome Web Store item. The upload runs only for a tag, and only when this and the `CHROME_STORE_ID` and `CWS_PUBLISHER_ID` variables are set. |
+| `EDGE_PRODUCT_ID` | `edge-add-ons` | The extension's product ID in Partner Center (a GUID, not the ID in the listing's URL). |
+| `EDGE_CLIENT_ID` | `edge-add-ons` | The Client ID from Partner Center's Publish API page. |
+| `EDGE_API_KEY` | `edge-add-ons` | An API key from the same page. The Edge upload runs only for a tag, and only when this is set. |
+| `AMO_JWT_ISSUER` | `firefox-add-ons` | The JWT issuer of an addons.mozilla.org API key. The Firefox submission runs only for a tag, and only when this is set. |
+| `AMO_JWT_SECRET` | `firefox-add-ons` | That key's JWT secret. |
+
+`CWS_EXTENSION_ID` is no longer read: the Chrome Web Store item is the `CHROME_STORE_ID`
+variable. [STORES.md](STORES.md) explains how to get each store's credentials.
+
+To turn the certificate into the secret: `base64 -i DeveloperID.p12 | pbcopy` on macOS.
+
+To make a deploy key:
+
+```sh
+ssh-keygen -t ed25519 -N "" -C "shard release" -f tap-deploy-key
+```
+
+Add `tap-deploy-key.pub` to the tap repository under Settings › Deploy keys with "Allow write
+access", and store `tap-deploy-key` (the private half) as `TAP_DEPLOY_KEY`. Do the same for the
+Scoop bucket with `BUCKET_DEPLOY_KEY`. Use a separate key for each repository. Both keys are set
+up already; you only need this to replace one.
+
+Without the Apple secrets, Gatekeeper asks before Shard's first launch; without the store
+credentials, the extension zips are only published with the release. Neither stops a release.
+
+## Variables
+
+Set these under Settings › Secrets and variables › Actions › Variables, or with `gh variable set`.
+They aren't secret: they're the extension's public IDs in each store.
+
+| Variable | Builds read it as | What it is | Also used for |
+| --- | --- | --- | --- |
+| `CHROME_STORE_ID` | `SHARD_CHROME_STORE_ID` | The 32-letter item ID at the end of `https://chromewebstore.google.com/detail/<id>` | The item the Chrome Web Store upload goes to |
+| `EDGE_STORE_ID` | `SHARD_EDGE_STORE_ID` | The ID at the end of `https://microsoftedge.microsoft.com/addons/detail/<id>` | |
+| `FIREFOX_STORE_SLUG` | `SHARD_FIREFOX_STORE_SLUG` | The slug at the end of `https://addons.mozilla.org/firefox/addon/<slug>` | |
+| `CWS_PUBLISHER_ID` | (not read by builds) | Your Chrome Web Store publisher ID, from the dashboard's Publisher › Settings | The Chrome Web Store upload, which version 2 of its API needs |
+
+```sh
+gh variable set CHROME_STORE_ID -R manyeya/shard --body <id>
+gh variable set EDGE_STORE_ID -R manyeya/shard --body <id>
+gh variable set FIREFOX_STORE_SLUG -R manyeya/shard --body <slug>
+```
+
+`src/install.rs` reads them with `option_env!` when Shard is compiled, and the same environment
+variables at run time override what was compiled in (for trying a listing without a release).
+Setup builds each store's link from them, and only lists browsers whose store has one:
+
+- Chrome, Arc, Brave, Vivaldi, Opera and Chromium use the Chrome Web Store;
+- Edge uses Edge Add-ons when `EDGE_STORE_ID` is set, and the Chrome Web Store otherwise;
+- Firefox uses Firefox Add-ons.
+
+With none set, setup has no extension step. A change reaches people with the next release's
+builds.
+
+## Homebrew, Scoop and winget
+
+### The tap and the bucket
+
+After the release is published, the `packages` job downloads the release's files and runs:
+
+```sh
+scripts/package-manifests.sh X.Y.Z dist manifests
+```
+
+It writes:
+
+- `manifests/Casks/shard.rb`, the Homebrew cask: the disk image's URL and SHA-256, a livecheck
+  on the latest GitHub release, `auto_updates true` (Shard updates itself), macOS Big Sur or
+  later, an `uninstall` that quits Shard and removes its launch agent `dev.shard.app`, a `zap`
+  that also deletes the data folder and the login entry's plist, and a caveat about opening an
+  app Apple hasn't notarised;
+- `manifests/bucket/shard.json`, the Scoop manifest: the portable zip's URL and SHA-256, a
+  `shard` shim and a Start menu shortcut for `Shard.exe`, and `checkver` and `autoupdate`
+  entries;
+- `manifests/winget/manifests/m/manyeya/Shard/X.Y.Z/`, the winget manifests (see
+  [winget](#winget)).
+
+For each of the tap and the bucket, the job clones the repository with its deploy key, copies
+`Casks/` or `bucket/` over, commits as `github-actions[bot]` with the message `shard X.Y.Z`, and
+pushes. If there's nothing to commit it says "Already up to date". Both repositories and both
+deploy keys already exist.
+
+People install with:
+
+```sh
+brew install --cask manyeya/tap/shard
+```
+
+```powershell
+scoop bucket add manyeya https://github.com/manyeya/scoop-bucket
+scoop install shard
+```
+
+If a push fails, the job's log shows it. Fix the key and re-run the `packages` job; it writes and
+pushes the same files again.
+
+### winget
+
+The workflow doesn't submit to winget. It uploads the manifests as the run's `winget-manifests`
+artifact, to go into [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) by pull
+request. The package is `manyeya.Shard`: the Setup `.exe`, installed per user, silently with
+`--silent`, and matched to the entry setup writes in Settings › Apps (product code `Shard`,
+publisher "The Shard Authors").
+
+The first time, and again for each release:
+
+1. Download the artifact:
+
+   ```sh
+   gh run list -R manyeya/shard -w Release -L 1      # the run ID
+   gh run download <run ID> -R manyeya/shard -n winget-manifests -D winget
+   ```
+
+   The manifests are in `winget/manifests/m/manyeya/Shard/X.Y.Z/`.
+
+2. Optionally, on Windows, check them and try the install from them:
+
+   ```powershell
+   winget validate --manifest winget\manifests\m\manyeya\Shard\X.Y.Z
+   winget settings --enable LocalManifestFiles     # once, as administrator
+   winget install --manifest winget\manifests\m\manyeya\Shard\X.Y.Z
+   ```
+
+3. Submit them, either with
+   [wingetcreate](https://github.com/microsoft/winget-create), which forks winget-pkgs under
+   your GitHub account and opens the pull request:
+
+   ```powershell
+   wingetcreate submit --token <GitHub token> winget\manifests\m\manyeya\Shard\X.Y.Z
+   ```
+
+   or by hand: fork microsoft/winget-pkgs, copy the folder to the same path
+   (`manifests/m/manyeya/Shard/X.Y.Z/`) in your fork, and open a pull request.
+
+4. winget-pkgs' checks validate the manifests and run the installer in a sandbox, and a
+   moderator merges the pull request. After that, `winget install manyeya.Shard` installs it.
+
+The installer manifest's `ReleaseDate` is the day the `packages` job ran.
+
+## The browser stores
+
+Once the GitHub release is out, three jobs send its extension to the stores whose credentials are
+set: `chrome-web-store`, `edge-add-ons` and `firefox-add-ons`. Each runs on its own, so a store
+that's down or refuses the update fails only its own job, and never holds back the release or the
+other stores. Re-running a store's job fails if that store already has this version. Each store
+has to have the extension already: its first submission is made by hand, as
+[STORES.md](STORES.md) describes.
+
+| Store | Runs when | What it does |
+| --- | --- | --- |
+| Chrome Web Store | the variables `CHROME_STORE_ID` and `CWS_PUBLISHER_ID`, and `CWS_REFRESH_TOKEN` | `npx --yes chrome-webstore-upload-cli@4.0.2 --source shard-extension-X.Y.Z-chrome.zip`, which uploads to the item `CHROME_STORE_ID` through version 2 of the Chrome Web Store API (with `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET` and `CWS_REFRESH_TOKEN`) and submits it for review. |
+| Edge Add-ons | `EDGE_API_KEY` | Uploads `shard-extension-X.Y.Z-chrome.zip` as the draft package of `EDGE_PRODUCT_ID` through the Edge Add-ons API (with `EDGE_CLIENT_ID` and `EDGE_API_KEY`), waits up to ten minutes for Edge to accept it, then submits the draft with the notes "Shard X.Y.Z" and waits for that too. The job fails if Edge refuses either, or takes longer. |
+| Firefox Add-ons | `AMO_JWT_ISSUER` | `npx --yes web-ext@8 sign --channel listed --source-dir firefox --api-key … --api-secret … --approval-timeout 0`, which submits the Firefox build to the listed add-on and doesn't wait for approval. |
+
+Each store reviews the new version before people get it, and browsers then update the extension
+from the store themselves.
+
 ## Checking the release
 
-Download `SHA256SUMS`, `update.txt` and `update.txt.sig` from the release, then:
+Download everything into an empty folder:
 
-1. **The manifest is signed by the key the app trusts.** With OpenSSL 3, using the public key
+```sh
+gh release download vX.Y.Z -R manyeya/shard -D shard-X.Y.Z
+cd shard-X.Y.Z
+```
+
+1. **The files match `SHA256SUMS`.** Every line should say `OK`:
+
+   ```sh
+   sha256sum -c SHA256SUMS              # Linux
+   shasum -a 256 -c SHA256SUMS          # macOS
+   ```
+
+2. **The manifest is signed by the key the app trusts.** With OpenSSL 3, using the public key
    PEM from [SECURITY.md](../SECURITY.md#the-update-signature):
 
    ```sh
    openssl pkeyutl -verify -rawin -pubin -inkey shard-update.pub.pem -in update.txt -sigfile update.txt.sig
    ```
 
-2. **The manifest is right.** It says the new version, has all four platform lines, and every
-   URL points at this tag.
+3. **The manifest is right.** `update.txt` says the new version, has all four platform lines,
+   every URL points at this tag, and each size and SHA-256 matches its file.
 
-3. **The files match.** Download the packages and run `sha256sum -c --ignore-missing SHA256SUMS`
-   (`shasum -a 256 -c --ignore-missing SHA256SUMS` on macOS). The sizes and hashes in
-   `update.txt` should match the update builds.
+4. **macOS.** Open the disk image: the window shows the background, with Shard beside the
+   Applications link. Open Shard from it (on an unsigned build, System Settings › Privacy &
+   Security › Open Anyway first): setup offers to install it. Install, choose Open Shard, and
+   check it's in `/Applications` and runs.
 
-4. **The packages work.** Open the disk image and launch Shard; on Windows run the Setup `.exe`
-   and the zip's `Shard.exe`; install the `.deb` on Ubuntu; load the extension zip unpacked.
+5. **Windows.** Run `Shard-Setup-X.Y.Z-windows-x64.exe`: setup installs into
+   `%LOCALAPPDATA%\Programs\Shard` with no administrator prompt. Check the Start menu shortcut,
+   and that Settings › Apps lists Shard X.Y.Z from The Shard Authors; uninstall it from there.
+   Unzip the portable zip and check its `Shard.exe` opens without offering setup.
 
-5. **Updates arrive.** On a machine with the previous version, open Limits and choose "Check
-   now". It should download the new version and offer "Restart to update", and restarting should
-   bring up the new version with your downloads intact.
+6. **Linux.** On x64 (and arm64 if you have one):
+
+   ```sh
+   chmod +x Shard-X.Y.Z-linux-x64.AppImage && ./Shard-X.Y.Z-linux-x64.AppImage   # offers setup
+   sudo apt install ./shard_X.Y.Z_amd64.deb && shard                             # Debian, Ubuntu
+   sudo dnf install ./shard-X.Y.Z-1.x86_64.rpm && shard                          # Fedora
+   tar xzf shard-X.Y.Z-linux-x64.tar.gz && shard-X.Y.Z-linux-x64/shard           # offers setup
+   ```
+
+7. **Homebrew.** On a Mac:
+
+   ```sh
+   brew update
+   brew install --cask manyeya/tap/shard        # or: brew upgrade --cask shard
+   brew info --cask manyeya/tap/shard           # says X.Y.Z
+   ```
+
+8. **Scoop.** On Windows:
+
+   ```powershell
+   scoop bucket add manyeya https://github.com/manyeya/scoop-bucket   # once
+   scoop update; scoop install shard            # or: scoop update shard
+   scoop info shard                             # says X.Y.Z
+   ```
+
+9. **The stores.** In each configured store's dashboard, the new version is submitted or in
+   review. Once it's approved, the listing shows it.
+
+10. **Updates arrive.** On a machine with the previous version, open Limits and choose "Check
+    now". It should download the new version and offer "Restart to update", and restarting should
+    bring up the new version with your downloads intact.
 
 ## A dry run
 
-Run the Release workflow by hand (Actions › Release › Run workflow) on any branch. It builds every
-package and uploads them as workflow artifacts (`macos`, `windows`, `linux-x64`, `linux-arm64`,
-`extension`), but skips the release job and the Chrome Web Store upload, which only run for tags.
-Use it to test packaging changes before tagging.
+Run the Release workflow by hand on a branch: Actions › Release › Run workflow, or
+`gh workflow run release.yml -R manyeya/shard --ref dev`. It builds and checks every package and
+uploads them as the run's artifacts (`macos`, `windows`, `linux-x64`, `linux-arm64`,
+`extension`), but skips the store uploads, the `release` job and the `packages` job, which only
+run for a tag. Use it to test packaging changes before tagging.
+
+Choose a branch, not a tag: run on a tag, the workflow treats it as a release and publishes it.
 
 ## When something goes wrong
 
 - **The `version` job fails.** The tag doesn't match `Cargo.toml`. Delete the tag
   (`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), fix the version on `dev`, and
   start the checklist again.
-- **A build job fails** (for example `hdiutil` failing even after its retries). Re-run the failed
-  jobs from the workflow run's page. Nothing is published until every build job has succeeded.
+- **A build job fails** (for example `hdiutil` failing inside `create-dmg` even after
+  `scripts/make-dmg.sh`'s three tries, or the setup check). Re-run the failed jobs from the run's
+  page. Nothing is published, to GitHub or the stores, until every build job and the
+  `extension` job have succeeded.
+- **A store's job fails.** The release is out, and so is every other store's update. Fix what
+  its log says (an expired refresh token, a new permission the store wants justified) and re-run
+  just that job. If the store did take the version before failing, re-running is refused; submit
+  that version's zip from the release by hand in the store's dashboard instead.
 - **The release job fails with "UPDATE_SIGNING_KEY isn't set".** Add the secret, then re-run
   the job.
+- **The `packages` job fails.** The release is out; only the tap, the bucket or the winget
+  artifact are missing. Fix what the log says and re-run the job.
 - **A published release is broken.** Fix it on `dev` and release a new patch version. Don't
   replace assets on an existing release: installed copies may already have read its manifest,
-  and the hashes in `update.txt` must stay true. If you must stop a bad update spreading, delete
-  the release or mark it a prerelease, so `releases/latest` points at the previous one again.
+  and the hashes in `update.txt`, the cask and the Scoop manifest must stay true. If you must
+  stop a bad update spreading, delete the release or mark it a prerelease, so `releases/latest`
+  points at the previous one again.
 
 ## The update signing key
 
@@ -216,80 +493,3 @@ two releases, the fewer copies that strands.
 If the private key leaks, rotate straight away, and say so in the release notes. Someone holding
 it could sign a manifest, though they would still need to get it served from this repository's
 latest release (or break the HTTPS connection to github.com) for installed copies to read it.
-
-## Secrets
-
-Set these under Settings › Secrets and variables › Actions.
-
-| Secret | Required | What it does |
-| --- | --- | --- |
-| `UPDATE_SIGNING_KEY` | Yes | The Ed25519 private key (PEM) that signs `update.txt`. The release job fails without it. |
-| `MACOS_CERTIFICATE` | No | A Developer ID Application certificate as a `.p12`, base64-encoded. With it, `Shard.app` and the disk image are signed with the hardened runtime. |
-| `MACOS_CERTIFICATE_PASSWORD` | With the certificate | The `.p12`'s password. |
-| `APPLE_ID` | No | The Apple ID used to notarise. Notarising and stapling run only when both the certificate and this are set. |
-| `APPLE_TEAM_ID` | With `APPLE_ID` | The team ID. |
-| `APPLE_APP_PASSWORD` | With `APPLE_ID` | An app-specific password for that Apple ID. |
-| `CWS_EXTENSION_ID` | No | The extension's Chrome Web Store item ID. |
-| `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN` | No | OAuth credentials for the Chrome Web Store API. The upload runs only when `CWS_REFRESH_TOKEN` is set, and only for tags. |
-| `TAP_DEPLOY_KEY` | For Homebrew (being added) | A private SSH deploy key with write access to `manyeya/homebrew-tap`, so the workflow can push the updated cask. |
-| `BUCKET_DEPLOY_KEY` | For Scoop (being added) | A private SSH deploy key with write access to `manyeya/scoop-bucket`, so the workflow can push the updated manifest. |
-
-To turn the certificate into the secret: `base64 -i DeveloperID.p12 | pbcopy` on macOS.
-
-To make a deploy key:
-
-```sh
-ssh-keygen -t ed25519 -N "" -C "shard release" -f tap-deploy-key
-```
-
-Add `tap-deploy-key.pub` to the tap repository under Settings › Deploy keys with "Allow write
-access", and store `tap-deploy-key` (the private half) as `TAP_DEPLOY_KEY`. Do the same for the
-Scoop bucket with `BUCKET_DEPLOY_KEY`. Use a separate key for each repository.
-
-Without the Apple secrets, the app is signed ad hoc and Gatekeeper asks before its first launch;
-without the Chrome Web Store secrets, the extension is only published as a zip. Neither stops a
-release.
-
-### Variables
-
-Added with the installer: setup's extension step opens Shard's page in each browser's store, and
-only offers the stores whose ID the build knows. Those IDs are compiled in from
-`SHARD_CHROME_STORE_ID`, `SHARD_EDGE_STORE_ID` and `SHARD_FIREFOX_STORE_SLUG`, which the release
-workflow passes from the repository's Actions variables (Settings › Secrets and variables ›
-Actions › Variables). They aren't secret. Set each one once the extension is listed in that store;
-until then, setup skips the extension step and people add the extension by hand.
-
-## Homebrew and Scoop
-
-Being added with the installer: the release workflow updates the Homebrew cask `shard` in
-`manyeya/homebrew-tap` and the Scoop manifest `shard` in `manyeya/scoop-bucket` with the new
-version, URLs and SHA-256 sums, using the deploy keys above. After a release, check that:
-
-```sh
-brew update && brew upgrade --cask shard      # or: brew install --cask manyeya/tap/shard
-```
-
-```powershell
-scoop update; scoop update shard              # or: scoop bucket add manyeya https://github.com/manyeya/scoop-bucket; scoop install shard
-```
-
-install the new version. If a push failed, the workflow run shows it; fix the key and re-run that
-job.
-
-## The Chrome Web Store
-
-Optional. When `CWS_REFRESH_TOKEN` and the other `CWS_*` secrets are set, the `extension` job of
-a tagged release runs:
-
-```sh
-npx --yes chrome-webstore-upload-cli@3 upload --source shard-extension-X.Y.Z.zip --auto-publish
-```
-
-which uploads the zip to the item `CWS_EXTENSION_ID` and submits it for review. The item has to
-exist first: create it once by uploading a zip by hand in the Chrome Web Store developer
-dashboard. The credentials are an OAuth client ID and secret from a Google Cloud project with the
-Chrome Web Store API enabled, and a refresh token for the account that owns the item; the
-[chrome-webstore-upload](https://github.com/fregante/chrome-webstore-upload-keys) project explains
-how to get them.
-
-The store listing isn't live yet, so for now people install the extension unpacked.

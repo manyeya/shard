@@ -476,7 +476,9 @@ pub fn launch(layout: &Layout) -> Result<(), String> {
     } else {
         std::process::Command::new(&layout.exe)
     };
-    cmd.env("SHARD_NO_SETUP", "1").spawn().map(drop).map_err(|e| format!("Couldn't open Shard: {e}"))
+    // Not the AppImage's own variables: the installed copy isn't running from it.
+    cmd.env("SHARD_NO_SETUP", "1").env_remove("APPIMAGE").env_remove("APPDIR");
+    cmd.spawn().map(drop).map_err(|e| format!("Couldn't open Shard: {e}"))
 }
 
 /// Run this copy as the download manager, where it is.
