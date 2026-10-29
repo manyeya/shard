@@ -39,7 +39,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -60,7 +60,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -108,7 +108,7 @@ jobs:
       # What installed copies update from: the app itself, zipped.
       - name: Update archive
         run: ditto -c -k --keepParent target/release/Shard.app "Shard-$VERSION-macos-universal.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: |
@@ -122,7 +122,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       AWS_LC_SYS_PREBUILT_NASM: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
@@ -141,7 +141,7 @@ jobs:
       - name: Check setup installs and removes it
         shell: pwsh
         run: scripts/test-setup.ps1 "Shard-Setup-$env:VERSION-windows-x64.exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: |
@@ -167,7 +167,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: scripts/linux-deps.sh
@@ -204,7 +204,7 @@ jobs:
           cp assets/icons/png/shard-512.png "$app/shard.png"
           ln -s usr/bin/shard "$app/AppRun"
           ARCH=${{ matrix.uname }} ./appimagetool --appimage-extract-and-run "$app" "Shard-$VERSION-linux-${{ matrix.arch }}.AppImage"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           path: |
@@ -220,14 +220,14 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Package for Chrome, Edge and Firefox
         run: |
           scripts/package-extension.sh "$VERSION" .
           mkdir -p build/firefox && (cd build/firefox && unzip -q "../../shard-extension-$VERSION-firefox.zip")
       - name: Check the Firefox build
         run: npx --yes web-ext@8 lint --source-dir build/firefox --warnings-as-errors
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: extension
           path: shard-extension-*.zip
@@ -240,8 +240,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -269,7 +269,7 @@ jobs:
           openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/update-key.pem" -in update.txt -out update.txt.sig
           rm "$RUNNER_TEMP/update-key.pem"
       - run: cd dist && sha256sum -- * > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           body_path: release-notes.md
@@ -285,8 +285,8 @@ jobs:
       # The cask only warns about Gatekeeper when the disk image wasn't notarised.
       NOTARISED: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.APPLE_ID != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -314,7 +314,7 @@ jobs:
           }
           push manyeya/homebrew-tap "$TAP_DEPLOY_KEY" Casks
           push manyeya/scoop-bucket "$BUCKET_DEPLOY_KEY" bucket
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: winget-manifests
           path: manifests/winget
@@ -333,7 +333,7 @@ jobs:
       CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
       REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.EXTENSION_ID != '' && env.PUBLISHER_ID != '' && env.REFRESH_TOKEN != ''
         with:
           name: extension
@@ -350,7 +350,7 @@ jobs:
       EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
       EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.EDGE_API_KEY != ''
         with:
           name: extension
@@ -390,7 +390,7 @@ jobs:
       AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
       AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.AMO_JWT_ISSUER != ''
         with:
           name: extension
