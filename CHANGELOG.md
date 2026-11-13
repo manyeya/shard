@@ -10,6 +10,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Every releas
 
 Nothing yet.
 
+## [0.2.0] - 2026-11-13
+
+### Added
+
+- **Auto retry.** A download that fails waits, then goes back in the queue by itself, up to a
+  number of times. Each download has its own retries and wait: right-click it and choose Auto
+  retry…, or click Auto retry in its details. New downloads start with the defaults in Settings
+  (5 retries, 30 seconds apart; 0 turns it off). The list counts down to the next try
+  ("retry 2 of 5 in 18s"), only the last failure is notified, and retries carry on after Shard
+  restarts. Resuming a download by hand gives it all its retries back.
+
+### Changed
+
+- 404s and other client errors still end a run at once, but auto retry now tries the download
+  again after its wait. Downloads that failed before this version count as out of retries, so
+  they don't all start again.
+
 ## [0.1.0] - 2026-10-23
 
 The first release.
@@ -128,5 +145,6 @@ The first release.
 - rustls 0.23.46 for RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and
   RUSTSEC-2026-0349, and rustls-webpki 0.103.16 for RUSTSEC-2026-0382.
 
-[Unreleased]: https://github.com/manyeya/shard/compare/v0.1.0...dev
+[Unreleased]: https://github.com/manyeya/shard/compare/v0.2.0...dev
+[0.2.0]: https://github.com/manyeya/shard/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/manyeya/shard/releases/tag/v0.1.0

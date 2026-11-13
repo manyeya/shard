@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Shard integration",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hands your browser's downloads to the Shard app. When Shard isn't running, the browser downloads as usual.",
   "homepage_url": "https://manyeya.github.io/shard/",
   "minimum_chrome_version": "116",
