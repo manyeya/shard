@@ -714,6 +714,8 @@ pub(crate) mod tests {
         peak: AtomicUsize,
         /// The ETag it sends; "v1" unless a test changes it.
         etag: Mutex<String>,
+        /// Requests left to answer 404 before serving again.
+        pub(crate) fail_next: AtomicUsize,
     }
 
     /// A local server that honours Range, refuses (429) past `max_conns` open connections, and
@@ -736,6 +738,10 @@ pub(crate) mod tests {
                         if let Some((a, b)) = line.strip_prefix("range: bytes=").and_then(|r| r.split_once('-')) {
                             range = (a.parse().unwrap(), b.parse().unwrap());
                         }
+                    }
+                    if log.fail_next.try_update(SeqCst, SeqCst, |n| n.checked_sub(1)).is_ok() {
+                        let _ = (&stream).write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
                     }
                     let open = log.open.fetch_add(1, SeqCst);
                     if open >= log.max_conns.load(SeqCst) {

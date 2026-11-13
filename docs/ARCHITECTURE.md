@@ -211,7 +211,8 @@ Each failed request is classified:
 | Other 4xx (404, 403…) | Fatal | The download fails at once. |
 
 A worker retries up to 5 times in a row without a byte of progress, then fails the download;
-any progress resets the count. The probe retries the same way.
+any progress resets the count. The probe retries the same way. A failed download can then be
+tried again whole by [auto retry](#the-queue-manager).
 
 ### The speed limit
 
@@ -274,14 +275,23 @@ Each item has a status: `queued`, `downloading`, `paused`, `done` or `failed`.
   needed any more); stopped ones become paused; errors become failed with the message. When the
   last download finishes and nothing is waiting, a `drained` counter goes up, and the UI starts
   the when-done countdown if one is set.
+- **Auto retry.** Each download has `retries` and `retry_wait` (seconds), copied from the
+  settings when it's added and changed with `set_retry`. When one fails with `retried < retries`,
+  it gets a `retry_at` that moment plus the wait; `tick()` queues it again once that has passed
+  and counts the retry. Every failure is retried, client errors included. Resuming, restarting or
+  refreshing the link by hand sets `retried` back to 0; pausing turns a waiting one into paused.
+  `set_retry` on a failed download with retries left starts the wait again. `retry_at` lives only
+  in memory: on open, a failed download with retries left waits its full wait again. The UI
+  announces a failure only once no retry is waiting.
 - **Restarting.** On open, downloads saved as `downloading` become `queued`, so they carry on from
-  their checkpoints.
+  their checkpoints, and failed ones with retries left wait to retry.
 - **Refreshing a link.** `refresh_link` replaces the URL, clears the error, queues the download
   again and marks the next run as refreshed (resume if the size matches, whatever the validator).
 - **Removing.** The row is deleted at once. A running download is stopped first and dropped when
   its task ends. Partial files (`.part`, `.resume`) are always deleted; the finished file only
   when asked.
-- **Settings.** `set_settings` clamps the numbers (1 to 10 downloads, 1 to 32 connections),
+- **Settings.** `set_settings` clamps the numbers (1 to 10 downloads, 1 to 32 connections,
+  0 to 1000 retries, a wait of 1 s to a day),
   writes every setting to the `settings` table, changes launch at login through the system if it
   changed, applies the speed limit, and rescans networks.
 
@@ -553,6 +563,9 @@ mode. It has two tables.
 | `error` | text, null | Why it failed. |
 | `added` | integer | When it was added, Unix seconds. |
 | `position` | integer | Place in the queue; lower runs first. Databases from before queue order get it added and numbered by `id`. |
+| `retries` | integer | Times it tries again by itself after failing; 0 is off. |
+| `retry_wait` | integer | Seconds it waits before each retry. |
+| `retried` | integer | Retries used since it was last started by hand. Databases from before auto retry get the three columns, with failed downloads counted as out of retries. |
 
 `settings`, key and value as text:
 
@@ -572,6 +585,8 @@ mode. It has two tables.
 | `auto_update` | `true` | Check for and download updates. |
 | `combine_networks` | `false` | Spread connections over every network. |
 | `networks_off` | empty | Comma-separated interface names left out of combining. |
+| `retries` | `5` | Auto retries for new downloads (0 to 1000). |
+| `retry_wait` | `30` | Seconds new downloads wait before each retry (1 to 86400). |
 
 Launch at login isn't stored here: Shard reads and writes it in the system itself (a LaunchAgent
 on macOS, an autostart entry on Linux, the `Run` registry key on Windows).

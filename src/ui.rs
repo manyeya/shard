@@ -415,6 +415,7 @@ enum RowAction {
     Remove,
     CopyUrl,
     RefreshLink,
+    Retry,
     Move(Move),
 }
 
@@ -599,6 +600,15 @@ struct RemoveModal {
     delete_file: bool,
 }
 
+/// How often a download (or, with no id, each new one) tries again by itself after failing.
+struct RetryModal {
+    id: Option<Id>,
+    name: SharedString,
+    retries: Entity<InputState>,
+    wait: Entity<InputState>,
+    error: Option<SharedString>,
+}
+
 /// Giving a download a fresh link, its old one having expired.
 struct RefreshModal {
     id: Id,
@@ -640,6 +650,7 @@ struct IdmView {
     start_at: Entity<InputState>,
     stop_at: Entity<InputState>,
     refresh: Option<RefreshModal>,
+    retry: Option<RetryModal>,
     limits_error: Option<SharedString>,
     remove: Option<RemoveModal>,
 
@@ -743,6 +754,7 @@ impl IdmView {
             start_at,
             stop_at,
             refresh: None,
+            retry: None,
             limits_error: None,
             remove: None,
             copied_at: None,
@@ -976,11 +988,56 @@ impl IdmView {
                 self.refresh = Some(RefreshModal { id, name: display_name(&row).into(), input, error: None });
                 cx.notify();
             }
+            RowAction::Retry => self.open_retry(Some(id), window, cx),
             RowAction::Move(to) => {
                 self.manager.move_to(id, to);
                 self.refresh(cx);
             }
         }
+    }
+
+    /// The auto retry dialog for one download, or with no id for downloads added from now on.
+    fn open_retry(&mut self, id: Option<Id>, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, retries, wait): (SharedString, u32, u32) = match id {
+            Some(id) => {
+                let Some(row) = self.row(id) else { return };
+                (display_name(row).into(), row.retries, row.retry_wait)
+            }
+            None => ("New downloads".into(), self.settings.retries, self.settings.retry_wait),
+        };
+        let field = |value: u32, window: &mut Window, cx: &mut Context<Self>| {
+            let input = cx.new(|cx| InputState::new(window, cx));
+            input.update(cx, |input, cx| input.set_value(value.to_string(), window, cx));
+            input
+        };
+        let (retries, wait) = (field(retries, window, cx), field(wait, window, cx));
+        retries.update(cx, |input, cx| input.focus(window, cx));
+        self.retry = Some(RetryModal { id, name, retries, wait, error: None });
+        cx.notify();
+    }
+
+    fn confirm_retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(modal) = &self.retry else { return };
+        let id = modal.id;
+        match crate::queue::parse_retry(&modal.retries.read(cx).value(), &modal.wait.read(cx).value()) {
+            Ok((retries, wait)) => {
+                match id {
+                    Some(id) => self.manager.set_retry(id, retries, wait),
+                    None => {
+                        self.set_settings(|s| (s.retries, s.retry_wait) = (retries, wait), cx);
+                    }
+                }
+                self.retry = None;
+                self.list_focus.focus(window, cx);
+                self.refresh(cx);
+            }
+            Err(err) => {
+                if let Some(modal) = &mut self.retry {
+                    modal.error = Some(err.into());
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn confirm_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1212,7 +1269,7 @@ impl IdmView {
     }
 
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remove.take().is_none() && self.refresh.take().is_none() {
+        if self.remove.take().is_none() && self.refresh.take().is_none() && self.retry.take().is_none() {
             self.limits_open = false;
         }
         self.list_focus.focus(window, cx);
@@ -1346,6 +1403,7 @@ impl Render for IdmView {
             .when(self.refresh.is_some(), |this| {
                 this.child(self.render_refresh(cx))
             })
+            .when(self.retry.is_some(), |this| this.child(self.render_retry(cx)))
     }
 }
 
@@ -2386,6 +2444,14 @@ impl IdmView {
                     )))
                     .child(stat_tile("SAVED TO", folder, None)),
             )
+            .child(
+                div()
+                    .id("auto-retry")
+                    .flex()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| this.run_action(RowAction::Retry, id, window, cx)))
+                    .child(stat_tile("AUTO RETRY", retry_text(&row), Some("EDIT"))),
+            )
             .child(connections_tile(
                 if live { row.connections } else { 0 },
                 want,
@@ -3167,6 +3233,27 @@ impl IdmView {
                         32,
                         |s, v| s.connections = v,
                     ))
+                    .child(
+                        h_flex()
+                            .p(px(12.))
+                            .gap(px(12.))
+                            .rounded(px(10.))
+                            .bg(ink::inset())
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(13.)).child("Auto retry"))
+                                    .child(caps(
+                                        match self.settings.retries {
+                                            0 => "OFF FOR NEW DOWNLOADS".to_string(),
+                                            n => format!("{n} × {} APART · NEW DOWNLOADS", format_duration(self.settings.retry_wait.into()).to_uppercase()),
+                                        },
+                                        ink::faint(),
+                                    )),
+                            )
+                            .child(ghost_button("retry-defaults", "Change").on_click(cx.listener(|this, _, window, cx| this.open_retry(None, window, cx)))),
+                    )
                     .child(toggle(
                         "keep-awake",
                         "Keep the computer awake",
@@ -3535,6 +3622,86 @@ impl IdmView {
             )
     }
 
+    fn render_retry(&self, cx: &Context<Self>) -> impl IntoElement {
+        let Some(modal) = &self.retry else {
+            return div();
+        };
+        let border = if modal.error.is_some() { ink::red().opacity(0.45) } else { ink::line_strong() };
+        let field = |label: &'static str, input: &Entity<InputState>| {
+            v_flex().flex_1().gap(px(6.)).child(caps(label, ink::faint())).child(
+                div()
+                    .h(px(34.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(8.))
+                    .bg(ink::inset())
+                    .border_1()
+                    .border_color(border)
+                    .child(Input::new(input).appearance(false).font_family(MONO).text_size(px(12.)).h(px(28.)).px_0()),
+            )
+        };
+        let about = if modal.id.is_some() {
+            "When this download fails, Shard waits, then tries again by itself, up to this many times. 0 turns it off."
+        } else {
+            "Downloads added from now on start with these. Change one download on its own from its details or its right-click menu."
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("retry-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(hsla(0., 0., 0., 0.62))
+                    .occlude() // a click here closes only the dialog, not the settings under it
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.dismiss(window, cx))),
+            )
+            .child(
+                v_flex()
+                    .id("retry")
+                    .relative()
+                    .w(px(420.))
+                    .p(px(20.))
+                    .gap(px(14.))
+                    .rounded(px(16.))
+                    .bg(ink::panel())
+                    .border_1()
+                    .border_color(ink::line_strong())
+                    .occlude()
+                    .key_context(MODAL)
+                    .on_action(cx.listener(|this, _: &Confirm, window, cx| this.confirm_retry(window, cx)))
+                    .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
+                    .child(
+                        v_flex()
+                            .gap(px(6.))
+                            .child(caps("AUTO RETRY", ink::faint()))
+                            .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).line_clamp(2).child(modal.name.clone())),
+                    )
+                    .child(div().text_size(px(13.)).text_color(ink::muted()).child(about))
+                    .child(h_flex().gap(px(10.)).child(field("RETRIES", &modal.retries)).child(field("WAIT BEFORE EACH, SECONDS", &modal.wait)))
+                    .when_some(modal.error.clone(), |this, err| {
+                        this.child(div().text_size(px(12.)).text_color(ink::red()).child(err))
+                    })
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .justify_end()
+                            .child(caps("ESC", ink::faint()))
+                            .child(ghost_button("retry-cancel", "Cancel").on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx))))
+                            .child(
+                                accent_button("retry-ok", "Save", Some(Lucide::RefreshCw))
+                                    .h(px(32.))
+                                    .on_click(cx.listener(|this, _, window, cx| this.confirm_retry(window, cx))),
+                            ),
+                    ),
+            )
+    }
+
     fn render_remove(&self, cx: &Context<Self>) -> impl IntoElement {
         let Some(modal) = &self.remove else {
             return div();
@@ -3738,6 +3905,7 @@ fn row_menu(menu: PopupMenu, view: &WeakEntity<IdmView>, id: Id, cx: &App) -> Po
         RowAction::RefreshLink,
         matches!(row.status, Status::Paused | Status::Failed | Status::Queued),
     ))
+    .item(item("Auto retry…", Lucide::RefreshCw, RowAction::Retry, row.status != Status::Done))
     .when(row.status == Status::Queued, |menu| {
         menu.separator()
             .item(item("Move to top", Lucide::Play, RowAction::Move(Move::Top), row.position > 1))
@@ -4022,7 +4190,24 @@ fn meta_line(row: &Row, speed: f32) -> String {
             format_bytes(row.total.max(row.done)),
             format_added(row.added, unix_now())
         ),
-        Status::Failed => row.error.clone().unwrap_or_else(|| "Failed".into()),
+        Status::Failed => {
+            let error = row.error.clone().unwrap_or_else(|| "Failed".into());
+            match row.retry_in {
+                Some(secs) => format!("retry {} of {} in {} · {error}", row.retried + 1, row.retries, format_duration(secs)),
+                None => error,
+            }
+        }
+    }
+}
+
+/// A download's auto retry, for its details: off, its settings, or the next try counting down.
+fn retry_text(row: &Row) -> String {
+    let wait = format_duration(row.retry_wait.into());
+    match (row.retries, row.retry_in) {
+        (0, _) => "Off".into(),
+        (n, Some(secs)) => format!("try {} of {n} in {}", row.retried + 1, format_duration(secs)),
+        (n, None) if row.retried > 0 => format!("{n} × {wait} apart · {} used", row.retried),
+        (n, None) => format!("{n} × {wait} apart"),
     }
 }
 
@@ -5629,7 +5814,8 @@ fn power_alert(cx: &App) -> Option<String> {
 
 /// A system notification for each download that finished or failed since the last look.
 fn announce(rows: &[Row], settings: &Settings, seen: &mut Option<HashMap<Id, Status>>, cx: &mut App) {
-    let now: HashMap<Id, Status> = rows.iter().map(|r| (r.id, r.status)).collect();
+    // Failed but trying again counts as waiting: only the last failure is announced.
+    let now: HashMap<Id, Status> = rows.iter().map(|r| (r.id, if r.retry_in.is_some() { Status::Queued } else { r.status })).collect();
     let before = seen.replace(now);
     let Some(before) = before.filter(|_| settings.notify) else { return };
     for r in rows {
@@ -5638,7 +5824,7 @@ fn announce(rows: &[Row], settings: &Settings, seen: &mut Option<HashMap<Id, Sta
         }
         let (title, body) = match r.status {
             Status::Done => (format!("Downloaded {}", display_name(r)), format_bytes(r.total)),
-            Status::Failed => (format!("Couldn't download {}", display_name(r)), r.error.clone().unwrap_or_default()),
+            Status::Failed if r.retry_in.is_none() => (format!("Couldn't download {}", display_name(r)), r.error.clone().unwrap_or_default()),
             _ => continue,
         };
         cx.show_system_notification(SystemNotification {
@@ -6206,6 +6392,10 @@ mod tests {
             parts,
             history: vec![],
             position: 0,
+            retries: 5,
+            retry_wait: 30,
+            retried: 0,
+            retry_in: None,
         };
         let mut g = super::GraphAnim::default();
         for _ in 0..200 {

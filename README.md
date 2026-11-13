@@ -85,7 +85,10 @@ can't queue downloads on your machine. [docs/PRIVACY.md](docs/PRIVACY.md) has ev
 - **Connection limits.** A server that answers 429 or 503 to one connection too many loses that
   connection; the rest carry on. Half a minute later Shard tries one more, doubling the wait
   (up to four minutes) each time the server refuses again. `Retry-After` is honoured. 404s and
-  other client errors fail at once instead of retrying.
+  other client errors end the run at once instead of retrying the request.
+- **Auto retry.** A download that fails waits, then tries again by itself. Each download has its
+  own number of retries and wait (right-click › Auto retry…); new ones start with the defaults in
+  Settings, 5 retries 30 seconds apart.
 - **Combining networks.** Optional (Settings): connections are bound to each network in turn
   (Wi-Fi, Ethernet, a phone over USB), so their speeds add up.
 - **Refresh an expired link.** Paste a fresh link to the same file; if it's the same size, the

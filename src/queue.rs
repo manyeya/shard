@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
@@ -74,6 +74,13 @@ pub struct Row {
     pub history: Vec<u64>,
     /// Place among the downloads waiting to run (1 is next); 0 for the rest.
     pub position: usize,
+    /// Times it tries again by itself after failing, and seconds it waits before each try.
+    pub retries: u32,
+    pub retry_wait: u32,
+    /// Retries used since it last failed with none left, or was started by hand.
+    pub retried: u32,
+    /// Failed, and trying again in this many seconds.
+    pub retry_in: Option<u64>,
 }
 
 /// One part of a download. Positions are fractions of the file.
@@ -122,6 +129,21 @@ pub struct Settings {
     pub combine_networks: bool,
     /// Networks (interface names) left out of combining.
     pub networks_off: Vec<String>,
+    /// Auto retry for new downloads: times to try again after failing, and seconds between
+    /// tries. Each download keeps its own copy (`set_retry`).
+    pub retries: u32,
+    pub retry_wait: u32,
+}
+
+/// The most automatic retries, and the longest wait before one (a day, in seconds).
+pub const MAX_RETRIES: u32 = 1000;
+pub const MAX_RETRY_WAIT: u32 = 86_400;
+
+/// Retries and seconds to wait, as typed. Err is a message for the user.
+pub fn parse_retry(retries: &str, wait: &str) -> Result<(u32, u32), String> {
+    let retries = retries.trim().parse().ok().filter(|r| *r <= MAX_RETRIES);
+    let wait = wait.trim().parse().ok().filter(|w| (1..=MAX_RETRY_WAIT).contains(w));
+    retries.zip(wait).ok_or_else(|| format!("Retries are 0 to {MAX_RETRIES}, and the wait 1 to {MAX_RETRY_WAIT} seconds."))
 }
 
 /// A network the computer has, whether combining uses it, and its share of the speed.
@@ -250,6 +272,8 @@ struct Item {
     doomed: Option<bool>,
     /// Its link was just replaced: the next run may resume though the server's validator changed.
     refreshed: bool,
+    /// Failed, and queued again by itself at this moment.
+    retry_at: Option<Instant>,
 }
 
 impl Item {
@@ -259,7 +283,17 @@ impl Item {
             (Some(n), s) if s != Status::Done => engine::saved_parts(&rec.dir.join(n)),
             _ => Vec::new(),
         };
-        Item { rec, status, headers, progress: Arc::default(), stop: None, speed: 0, seen: None, history: VecDeque::new(), parts, part_speed: HashMap::new(), doomed: None, refreshed: false }
+        let mut it = Item { rec, status, headers, progress: Arc::default(), stop: None, speed: 0, seen: None, history: VecDeque::new(), parts, part_speed: HashMap::new(), doomed: None, refreshed: false, retry_at: None };
+        // Failed before Shard quit, with retries left: the wait starts over.
+        if status == Status::Failed {
+            it.retry_at = it.next_retry();
+        }
+        it
+    }
+
+    /// When a download that just failed tries again, if it has retries left.
+    fn next_retry(&self) -> Option<Instant> {
+        (self.rec.retried < self.rec.retries).then(|| Instant::now() + Duration::from_secs(self.rec.retry_wait.into()))
     }
 
     fn path(&self) -> Option<PathBuf> {
@@ -325,6 +359,8 @@ impl Manager {
             auto_update: db.setting("auto_update").is_none_or(|v| v == "true"),
             combine_networks: db.setting("combine_networks").is_some_and(|v| v == "true"),
             networks_off: db.setting("networks_off").map_or_else(Vec::new, |v| v.split(',').filter(|n| !n.is_empty()).map(String::from).collect()),
+            retries: db.setting("retries").and_then(|v| v.parse().ok()).unwrap_or(5),
+            retry_wait: db.setting("retry_wait").and_then(|v| v.parse().ok()).unwrap_or(30),
         };
         let net = Net::new();
         net.limit.set(settings.speed_limit);
@@ -380,6 +416,7 @@ impl Manager {
     /// Every download, newest first.
     pub fn rows(&self) -> Vec<Row> {
         let inner = self.lock();
+        let now = Instant::now();
         let waiting: Vec<Id> = inner.items.iter().filter(|i| i.status == Status::Queued).map(|i| i.rec.id).collect();
         inner
             .items
@@ -417,6 +454,10 @@ impl Manager {
                     },
                     history: i.history.iter().copied().collect(),
                     position: waiting.iter().position(|w| *w == i.rec.id).map_or(0, |n| n + 1),
+                    retries: i.rec.retries,
+                    retry_wait: i.rec.retry_wait,
+                    retried: i.rec.retried,
+                    retry_in: i.retry_at.filter(|_| i.status == Status::Failed).map(|t| t.saturating_duration_since(now).as_secs()),
                 }
             })
             .collect()
@@ -442,7 +483,8 @@ impl Manager {
         let mut inner = self.lock();
         let (text, added) = (header_text(&headers), now());
         let dir = dir.unwrap_or_else(|| inner.settings.dir.clone());
-        let id = inner.db.insert(parsed.as_str(), &text, &dir, "queued", added).map_err(|e| e.to_string())?;
+        let retry = (inner.settings.retries, inner.settings.retry_wait);
+        let id = inner.db.insert(parsed.as_str(), &text, &dir, "queued", added, retry).map_err(|e| e.to_string())?;
         let position = inner.db.position(id).map_err(|e| e.to_string())?;
         let rec = Saved {
             id,
@@ -457,6 +499,9 @@ impl Manager {
             error: None,
             added,
             position,
+            retries: retry.0,
+            retry_wait: retry.1,
+            retried: 0,
         };
         inner.items.push(Item::new(rec, Status::Queued));
         self.schedule(&mut inner);
@@ -509,7 +554,7 @@ impl Manager {
                 return;
             }
             it.delete_files(false);
-            (it.rec.done, it.rec.error, it.status) = (0, None, Status::Queued);
+            (it.rec.done, it.rec.error, it.status, it.rec.retried) = (0, None, Status::Queued, 0);
             it.parts.clear();
         });
     }
@@ -550,12 +595,23 @@ impl Manager {
                 return;
             }
             it.rec.url = parsed.into();
-            (it.refreshed, it.rec.error) = (true, None);
+            (it.refreshed, it.rec.error, it.rec.retried) = (true, None, 0);
             if it.status != Status::Done {
                 it.status = Status::Queued;
             }
         });
         found.then_some(()).ok_or_else(|| "That download is gone.".into())
+    }
+
+    /// How often a download tries again by itself after failing, and how long it waits first.
+    /// A failed one with retries left starts waiting again, with the new wait.
+    pub fn set_retry(&self, id: Id, retries: u32, wait: u32) {
+        self.with(id, |it| {
+            (it.rec.retries, it.rec.retry_wait) = (retries.min(MAX_RETRIES), wait.clamp(1, MAX_RETRY_WAIT));
+            if it.status == Status::Failed {
+                it.retry_at = it.next_retry();
+            }
+        });
     }
 
     /// Move a download within the queue; waiting downloads start from the top.
@@ -623,7 +679,13 @@ impl Manager {
     /// Err is a message for the user (for example a folder that can't be created).
     pub fn set_settings(&self, s: Settings) -> Result<(), String> {
         std::fs::create_dir_all(&s.dir).map_err(|e| format!("Can't use {}: {e}", s.dir.display()))?;
-        let s = Settings { max_active: s.max_active.clamp(1, 10), connections: s.connections.clamp(1, 32), ..s };
+        let s = Settings {
+            max_active: s.max_active.clamp(1, 10),
+            connections: s.connections.clamp(1, 32),
+            retries: s.retries.min(MAX_RETRIES),
+            retry_wait: s.retry_wait.clamp(1, MAX_RETRY_WAIT),
+            ..s
+        };
         if s.launch_at_login != self.lock().settings.launch_at_login {
             crate::system::set_launch_at_login(s.launch_at_login).map_err(|e| format!("Can't change launch at login: {e}"))?;
         }
@@ -644,6 +706,8 @@ impl Manager {
             ("auto_update", s.auto_update.to_string()),
             ("combine_networks", s.combine_networks.to_string()),
             ("networks_off", s.networks_off.join(",")),
+            ("retries", s.retries.to_string()),
+            ("retry_wait", s.retry_wait.to_string()),
         ] {
             inner.db.set_setting(k, &v).map_err(|e| e.to_string())?;
         }
@@ -676,6 +740,7 @@ impl Manager {
         let (stop, rx) = watch::channel(false);
         it.status = Status::Downloading;
         it.rec.error = None;
+        it.retry_at = None;
         it.stop = Some(stop);
         (it.speed, it.seen) = (0, None);
         it.history.clear();
@@ -740,7 +805,10 @@ impl Manager {
             match result {
                 Ok(Outcome::Done) => (it.headers, it.rec.headers) = (HeaderMap::new(), String::new()), // cookies aren't needed any more
                 Ok(Outcome::Stopped) if it.status == Status::Downloading => it.status = Status::Paused,
-                Err(e) if it.status == Status::Downloading => (it.status, it.rec.error) = (Status::Failed, Some(e.to_string())),
+                Err(e) if it.status == Status::Downloading => {
+                    (it.status, it.rec.error) = (Status::Failed, Some(e.to_string()));
+                    it.retry_at = it.next_retry();
+                }
                 _ => {}
             }
             it.save(db);
@@ -778,6 +846,17 @@ impl Manager {
             it.save(db);
         }
         push(throughput, total);
+        // Failed downloads whose wait is over go back in the queue.
+        let now = Instant::now();
+        let mut retrying = false;
+        for it in items.iter_mut().filter(|i| i.status == Status::Failed && i.retry_at.is_some_and(|t| t <= now)) {
+            (it.status, it.retry_at, it.rec.retried) = (Status::Queued, None, it.rec.retried + 1);
+            it.save(db);
+            retrying = true;
+        }
+        if retrying {
+            self.schedule(&mut inner);
+        }
         for route in self.net.routes() {
             let bytes = route.bytes.load(Relaxed);
             let entry = inner.network_speed.entry(route.network.name.clone()).or_insert((bytes, 0));
@@ -847,11 +926,15 @@ impl Manager {
 
 fn requeue(it: &mut Item) {
     if matches!(it.status, Status::Paused | Status::Failed) {
-        (it.status, it.rec.error) = (Status::Queued, None);
+        (it.status, it.rec.error, it.rec.retried) = (Status::Queued, None, 0);
     }
 }
 
 fn pause(it: &mut Item) {
+    // Failed but about to try again: it's paused instead, so resuming (or the schedule) picks it up.
+    if it.retry_at.take().is_some() {
+        it.status = Status::Paused;
+    }
     if matches!(it.status, Status::Queued | Status::Downloading) {
         it.status = Status::Paused;
         if let Some(stop) = &it.stop {
@@ -964,6 +1047,38 @@ pub(crate) mod tests {
         assert!(path(b).starts_with(dir.join("elsewhere")), "{:?}", path(b));
         assert_eq!(std::fs::read(path(c)).unwrap(), *body);
         let _ = std::fs::remove_dir_all(dir); // Windows keeps the open database locked
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retries_by_itself_until_out_of_retries() {
+        assert_eq!(parse_retry(" 50 ", "60"), Ok((50, 60)));
+        assert!(parse_retry("5", "0").is_err() && parse_retry("x", "30").is_err() && parse_retry("1001", "30").is_err());
+        let body = body();
+        let (url, log) = serve(body.clone(), 100);
+        let dir = scratch("queue-retry");
+        let m = Manager::open(&dir.join("shard.db"), dir.join("dl"), Handle::current()).unwrap();
+        m.set_settings(Settings { dir: dir.join("dl"), retries: 2, retry_wait: 1, ..m.settings() }).unwrap();
+        log.fail_next.store(4, std::sync::atomic::Ordering::SeqCst);
+        let id = m.add(&url).unwrap();
+
+        // The first try and both retries fail: it stays failed, with nothing left to wait for.
+        let row = |rows: &[Row]| rows.iter().find(|r| r.id == id).cloned().unwrap();
+        let waiting = row(&wait_until(&m, |r| row(r).retry_in.is_some()).await);
+        assert_eq!((waiting.status, waiting.retries, waiting.retry_wait), (Status::Failed, 2, 1), "new downloads take the defaults");
+        let out = row(&wait_until(&m, |r| row(r).status == Status::Failed && row(r).retry_in.is_none()).await);
+        assert_eq!((out.retried, log.fail_next.load(std::sync::atomic::Ordering::SeqCst)), (2, 1));
+
+        // Out of retries after a restart too; more retries for it, and it waits again, fails once
+        // more, then finishes.
+        drop(m);
+        let m = Manager::open(&dir.join("shard.db"), dir.join("dl"), Handle::current()).unwrap();
+        let reopened = row(&m.rows());
+        assert_eq!((reopened.status, reopened.retried, reopened.retry_in), (Status::Failed, 2, None));
+        m.set_retry(id, 5, 1);
+        let done = row(&wait_until(&m, |r| row(r).status == Status::Done).await);
+        assert_eq!((done.retries, done.retried), (5, 4));
+        assert_eq!(std::fs::read(done.path.unwrap()).unwrap(), *body);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test(flavor = "multi_thread")]
