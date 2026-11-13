@@ -51,7 +51,7 @@ jobs:
 
   macos:
     needs: version
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       VERSION: ${{ needs.version.outputs.version }}
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}

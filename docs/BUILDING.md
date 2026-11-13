@@ -58,7 +58,7 @@ cargo build --release --locked
 
 Full Xcode isn't needed. GPUI is built with its `runtime_shaders` feature, so no Metal shader
 compiler runs at build time. The bundle the scripts make asks for macOS 11 or later
-(`LSMinimumSystemVersion`); CI and releases build on `macos-14` runners.
+(`LSMinimumSystemVersion`); CI and releases build on `macos-15` runners.
 
 A bare binary runs, but system notifications (and the copied-link offers that use them) only
 work from inside an app bundle; see [the macOS app bundle](#the-macos-app-bundle).
