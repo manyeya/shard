@@ -19,7 +19,7 @@ jobs:
       # aws-lc-sys (rustls' crypto) assembles with NASM on Windows; use the objects it ships instead.
       AWS_LC_SYS_PREBUILT_NASM: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -46,7 +46,7 @@ jobs:
   extension:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Package and check the Firefox build
         run: |
           scripts/package-extension.sh 0.0.0 build
@@ -56,7 +56,7 @@ jobs:
   workflows:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12

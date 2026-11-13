@@ -28,7 +28,7 @@ jobs:
         # build-mode none) and the workflow files as they are.
         language: [actions, rust]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Edition 2024 needs cargo 1.85 or later to read Cargo.toml; make sure CodeQL finds one.
       - if: matrix.language == 'rust'
         uses: dtolnay/rust-toolchain@stable
